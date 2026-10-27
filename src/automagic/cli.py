@@ -295,6 +295,10 @@ def run(
     path: PathOpt = Path(),
     dry_run: Annotated[bool, typer.Option(help="Show waves and commands only.")] = False,
     restart: Annotated[bool, typer.Option(help="Discard saved run state.")] = False,
+    update: Annotated[
+        bool,
+        typer.Option(help="After a plan change, redo only work items whose nodes changed."),
+    ] = False,
     yes: Annotated[bool, typer.Option(help="Skip the confirmation prompt.")] = False,
     max_concurrency: Annotated[int | None, typer.Option(help="Parallel agents per wave.")] = None,
     only: Annotated[
@@ -321,9 +325,7 @@ def run(
         selected = None
         if only:
             saved = None if restart else _saved_run(root)
-            done = (
-                {k for k, r in saved.items.items() if r.status == runner.DONE} if saved else set()
-            )
+            done = runner.finished(graph, items, saved) if saved else set()
             selected = runner.select(
                 items, [x.strip() for v in only for x in v.split(",") if x.strip()], done
             )
@@ -357,12 +359,21 @@ def run(
     if not yes and not typer.confirm("Launch agents unattended in these worktrees?"):
         raise typer.Exit(0)
     state_path = state_dir(root) / "plan" / "run.json"
-    state = runner.RunState(root_hash=graph.root_hash())
+    state = runner.fresh_state(graph, _saved_run(root) if restart else None)
     if state_path.exists() and not restart:
         saved = runner.RunState.load(state_path)
         if saved.root_hash != graph.root_hash():
-            typer.echo("error: plan changed since the last run; use --restart", err=True)
-            raise typer.Exit(1)
+            stale = runner.stale_items(graph, items, saved)
+            if not update:
+                typer.echo(
+                    "error: plan changed since the last run "
+                    f"(stale work items: {', '.join(stale) or 'none'}); use --update to redo "
+                    "only those, or --restart to redo everything",
+                    err=True,
+                )
+                raise typer.Exit(1)
+            runner.adopt_plan(graph, items, saved)
+            typer.echo(f"plan changed: redoing {', '.join(stale) or 'no finished work items'}")
         state = saved
     state = runner.run_plan(
         graph,
