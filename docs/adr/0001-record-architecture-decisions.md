@@ -1,0 +1,16 @@
+# 0001. Record architecture decisions
+
+- Status: accepted
+- Date: 2026-10-25
+
+## Context
+
+We need a durable, reviewable record of significant decisions that humans and AI agents can ground on.
+
+## Decision
+
+Record decisions as ADRs in `docs/adr/`, based on [0000-template.md](0000-template.md).
+
+## Consequences
+
+Decisions are versioned with the code. Agents read ADRs instead of guessing intent.

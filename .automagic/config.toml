@@ -1,0 +1,10 @@
+provider = "copilot"
+provider_command = "copilot"
+max_context_tokens = 40000
+max_changed_lines = 400
+max_rounds = 8
+max_instruction_bytes = 8000
+runner_command = "copilot -p {prompt} -s --no-ask-user --allow-tool=write --allow-tool=shell '--deny-tool=shell(git push)' '--deny-tool=shell(git merge)'"
+verify_command = "prek run --all-files"
+max_concurrency = 3
+agent_timeout = 3600

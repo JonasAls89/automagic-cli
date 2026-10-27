@@ -1,0 +1,31 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-json
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-added-large-files
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.31.1
+    hooks:
+      - id: zizmor
+  - repo: local
+    hooks:
+      - id: eslint
+        name: eslint
+        entry: npx --no-install eslint
+        language: system
+        types_or: [javascript, ts]
+      - id: prettier
+        name: prettier
+        entry: npx --no-install prettier --check
+        language: system
+        types_or: [javascript, ts, json, yaml, markdown]
+      - id: automagic-check
+        name: automagic guardrails
+        entry: automagic check
+        language: system
+        pass_filenames: false
+        files: '\.md$'

@@ -1,0 +1,33 @@
+[project]
+name = "automagic"
+version = "0.1.0"
+description = "Scaffold repo baselines and plan work with a Merkle assumption graph"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["typer", "jinja2", "pydantic", "rich"]
+
+[project.scripts]
+automagic = "automagic:main"
+
+[build-system]
+requires = ["uv_build>=0.8,<0.12"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = ["pytest", "ruff", "bandit[toml]", "prek"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]
