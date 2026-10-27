@@ -75,7 +75,7 @@ The default runner denies `git push` and `git merge` via `--deny-tool`, which is
 
 `automagic review wi-02` (a work item id, a node id, or a branch; with no target it uses the current branch, so run it as `automagic review --path <project>` from inside a worktree) diffs the agent's own commits: the base is the commit recorded when `automagic run` prepared the worktree, so merged-in prerequisites are not counted. Findings:
 
-- **scope**: changed files not declared by the item's nodes are warnings; changes to guardrail, CI or config files (`AGENTS.md`, `.github/workflows/*`, `.pre-commit-config.yaml`, ...) outside the declared files are errors; so is a committed brief. Nodes that declare no files skip this check.
+- **scope**: changed files not declared by the item's nodes are warnings; changes to guardrail, CI or config files outside the declared files are errors (`GUARDED` in [review.py](src/automagic/review.py): `AGENTS.md`, `docs/GUARDRAILS.md`, `.github/workflows|prompts|skills|instructions/*`, `.pre-commit-config.yaml`, `pyproject.toml`, `eslint.config.js`, `.automagic/*`); so is a committed brief. Nodes that declare no files skip the warning but not the error, so list such a file in a node to be allowed to change it.
 - **size**: more changed lines than `max_changed_lines` is an error; far above the node estimates is a warning.
 - **guardrails**: `automagic check` problems in changed files are errors.
 - **verify** (`--verify`) and **ai** (`--ai`, via the provider, truncated to half the context budget).

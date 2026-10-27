@@ -22,8 +22,13 @@ GUARDED = (
     ".github/workflows/*",
     ".github/copilot-instructions.md",
     ".github/instructions/*",
+    ".github/prompts/*",
+    ".github/skills/*",
     ".pre-commit-config.yaml",
     "AGENTS.md",
+    "docs/GUARDRAILS.md",
+    "pyproject.toml",
+    "eslint.config.js",
     ".automagic/*",
 )
 DRIFT_FACTOR = 1.5
@@ -160,24 +165,23 @@ def collect(
         review.add(ERROR, "scope", "The agent brief was committed", BRIEF_PATH)
 
     declared = sorted({f for n in nodes for f in n.files})
-    if declared:
-        for name in review.files:
-            if _in_scope(name, declared):
-                continue
-            guarded = any(fnmatch.fnmatch(name, g) for g in GUARDED)
+    for name in review.files:
+        if _in_scope(name, declared):
+            continue
+        if any(fnmatch.fnmatch(name, g) for g in GUARDED):
             review.add(
-                ERROR if guarded else WARN,
-                "scope",
-                "Guardrail/CI/config file changed outside the declared scope"
-                if guarded
-                else "File is outside the declared scope",
-                name,
+                ERROR, "scope", "Guardrail/CI/config file changed outside the declared scope", name
             )
+        elif declared:
+            review.add(WARN, "scope", "File is outside the declared scope", name)
+    if declared:
         for d in declared:
             if not any(_in_scope(name, [d]) for name in review.files):
                 review.add(INFO, "scope", "Declared file was not changed", d)
     else:
-        review.add(INFO, "scope", "Nodes declare no files; file scope cannot be checked")
+        review.add(
+            INFO, "scope", "Nodes declare no files; only guardrail/CI/config files are checked"
+        )
 
     if review.lines > cfg.max_changed_lines:
         review.add(
