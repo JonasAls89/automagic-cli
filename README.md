@@ -102,6 +102,8 @@ Token counts are estimated (about 4 characters per token).
 
 ## Development
 
+`uv run pytest` measures source coverage and requires at least 90%.
+
 ```sh
 uv run pytest && uv run ruff check . && uv run bandit -c pyproject.toml -r src
 ```

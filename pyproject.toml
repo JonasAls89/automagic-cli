@@ -14,10 +14,14 @@ requires = ["uv_build>=0.8,<0.12"]
 build-backend = "uv_build"
 
 [dependency-groups]
-dev = ["pytest", "ruff", "bandit[toml]", "prek"]
+dev = ["pytest", "pytest-cov", "ruff", "bandit[toml]", "prek"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+addopts = ["--cov=automagic", "--cov-report=term-missing"]
+
+[tool.coverage.report]
+fail_under = 90
 
 [tool.ruff]
 line-length = 100
@@ -27,7 +31,7 @@ target-version = "py312"
 select = ["E", "F", "I", "B", "UP", "S", "SIM", "RUF"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]
+"tests/**" = ["S101", "S603", "S607"]
 
 [tool.bandit]
 exclude_dirs = ["tests", ".venv"]
