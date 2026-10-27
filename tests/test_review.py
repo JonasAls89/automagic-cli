@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from test_runner import WRITE, configure, make_repo
 from typer.testing import CliRunner
 
@@ -73,7 +74,7 @@ def test_out_of_scope_file_is_a_warning_and_guarded_file_is_an_error(tmp_path):
         "outside the declared scope" in out.output and "Declared file was not changed" in out.output
     )
 
-    sneaky = "sh -c 'echo x > AGENTS.md' {prompt}"
+    sneaky = "sh -c 'echo \"$PWD\" > AGENTS.md' {prompt}"
     (tmp_path / "two").mkdir()
     repo2 = make_repo(tmp_path / "two", nodes(a=["a.txt"]))
     configure(repo2, sneaky)
@@ -81,6 +82,27 @@ def test_out_of_scope_file_is_a_warning_and_guarded_file_is_an_error(tmp_path):
     out = review(repo2, "wi-01")
     assert out.exit_code == 1 and "Verdict: **fail**" in out.output
     assert "Guardrail/CI/config file changed" in out.output
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["AGENTS.md", "pyproject.toml", "docs/GUARDRAILS.md", ".github/prompts/x.prompt.md"],
+)
+def test_guarded_files_fail_even_when_nodes_declare_no_files(tmp_path, name):
+    repo = make_repo(tmp_path, [Node(id="a", title="A", content="x", est_lines=10)])
+    configure(repo, f"sh -c 'mkdir -p $(dirname {name}) && echo \"$PWD\" > {name}' {{prompt}}")
+    run_all(repo)
+    out = review(repo, "wi-01")
+    assert out.exit_code == 1 and "Verdict: **fail**" in out.output
+    assert "Guardrail/CI/config file changed" in out.output and name in out.output
+
+
+def test_ordinary_files_pass_when_nodes_declare_no_files(tmp_path):
+    repo = make_repo(tmp_path, [Node(id="a", title="A", content="x", est_lines=10)])
+    configure(repo, WRITE)
+    run_all(repo)
+    out = review(repo, "wi-01")
+    assert out.exit_code == 0 and "Verdict: **pass**" in out.output
 
 
 def test_size_budget_is_enforced(tmp_path):

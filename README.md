@@ -17,7 +17,7 @@ uv tool install .        # or: uv run automagic ...
 | `automagic context` | | Regenerates the `docs/CONTEXT.md` index. |
 | `automagic plan "<goal>" [--resume]` | `/automagic-plan` | Interviews you until the Merkle assumption graph is stable, then proposes worktrees. |
 | `automagic show [--node <id>]` | `/automagic-show` | Regenerates and prints `plan.md` (Mermaid Merkle graph, work items, interview history) without AI calls; `--node` prints a node's hash chain. |
-| `automagic run [--dry-run] [--restart] [--yes] [--max-concurrency N]` | `/automagic-run` | Launches one Copilot CLI agent per work item in its worktree, in dependency waves. Agents commit on their own branch; nothing is pushed or merged. |
+| `automagic run [--dry-run] [--restart] [--update] [--yes] [--max-concurrency N]` | `/automagic-run` | Launches one Copilot CLI agent per work item in its worktree, in dependency waves. Agents commit on their own branch; nothing is pushed or merged. |
 | `automagic review [target] [--verify] [--ai] [--base SHA]` | `/automagic-review` | Reviews one work item's branch against its nodes: scope (files vs the node's declared files; guardrail/CI files are errors), size budget, context-file guardrails, optional `verify_command` and AI review. Writes `.automagic/plan/reviews/<id>.md` with a verdict (`pass`/`concerns`/`fail`) and a proposed commit message. Exits 1 on `fail`. |
 | `automagic worktrees [--create] [--yes]` | `/automagic-worktrees` | Shows or creates worktrees for the saved plan, each with a `.automagic/BRIEF.md`. |
 
@@ -54,7 +54,7 @@ State is stored in `.automagic/plan/`; commit it so reviewers can inspect the pl
 
 ## Changing a finished plan
 
-`automagic plan --amend "<change>"` edits or adds nodes. Nodes that depend on them get new hashes and are re-examined by the interview; the rest stay validated. The command lists edited, new and invalidated nodes, and asks before applying a change that contradicts agreed intent (`--yes` accepts). The old run state is then stale and needs `automagic run --restart`.
+`automagic plan --amend "<change>"` edits or adds nodes. Nodes that depend on them get new hashes and are re-examined by the interview; the rest stay validated. The command lists edited, new and invalidated nodes, and asks before applying a change that contradicts agreed intent (`--yes` accepts). The old run state is then stale: `automagic run` lists the stale work items, and `automagic run --update` redoes only those (see below).
 
 ## Running agents
 
@@ -63,10 +63,11 @@ State is stored in `.automagic/plan/`; commit it so reviewers can inspect the pl
 `automagic run --only wi-02,wi-04` (work item or node ids) runs just those items plus any unfinished prerequisites; finished items are skipped.
 
 1. Work items run in waves: every item whose prerequisites are done runs in parallel, up to `max_concurrency`.
-2. A dependent worktree is branched off its first prerequisite branch, and the other prerequisite branches are merged in (a merge conflict fails the item).
+2. A dependent worktree is branched off its first prerequisite branch, and every prerequisite branch not yet in its history is merged in, also when the worktree already exists (for example from `automagic worktrees --create`) or when an earlier attempt failed on a merge conflict.
 3. Each agent runs `runner_command` in its worktree with `.automagic/BRIEF.md` as its brief. automagic commits the result (never the brief) and runs `verify_command`; if a formatter fixes files, the fixes are committed and the check repeats once.
-4. A failed item blocks its dependents; siblings continue. Re-running skips finished items and retries the rest. State is in `.automagic/plan/run.json`, logs in `.automagic/plan/runs/<id>.log`. A changed plan requires `--restart`.
-5. Nothing is pushed or merged. Review each branch and merge it yourself.
+4. A failed item blocks its dependents; siblings continue. An agent that exits cleanly but leaves the branch unchanged from its base also fails. Re-running skips finished items and retries the rest. State is in `.automagic/plan/run.json`, logs in `.automagic/plan/runs/<id>.log`.
+5. Each item records a hash of its nodes (which cover their prerequisites). After a plan change, `automagic run` stops and lists the stale items: `--update` redoes only those, continuing on their existing branch with the prerequisites merged in again, and `--restart` redoes everything. Both keep each branch's recorded base, so reviews still see all of the item's work. See [ADR 0004](docs/adr/0004-run-state-tracks-work-item-hashes.md).
+6. Nothing is pushed or merged. Review each branch and merge it yourself.
 
 The default runner denies `git push` and `git merge` via `--deny-tool`, which is a best-effort guard rather than a sandbox: run agents only on repositories where you accept unattended shell access. Agents only see committed files, so commit `AGENTS.md` and the plan before running.
 
@@ -74,7 +75,7 @@ The default runner denies `git push` and `git merge` via `--deny-tool`, which is
 
 `automagic review wi-02` (a work item id, a node id, or a branch; with no target it uses the current branch, so run it as `automagic review --path <project>` from inside a worktree) diffs the agent's own commits: the base is the commit recorded when `automagic run` prepared the worktree, so merged-in prerequisites are not counted. Findings:
 
-- **scope**: changed files not declared by the item's nodes are warnings; changes to guardrail, CI or config files (`AGENTS.md`, `.github/workflows/*`, `.pre-commit-config.yaml`, ...) outside the declared files are errors; so is a committed brief. Nodes that declare no files skip this check.
+- **scope**: changed files not declared by the item's nodes are warnings; changes to guardrail, CI or config files outside the declared files are errors (`GUARDED` in [review.py](src/automagic/review.py): `AGENTS.md`, `docs/GUARDRAILS.md`, `.github/workflows|prompts|skills|instructions/*`, `.pre-commit-config.yaml`, `pyproject.toml`, `eslint.config.js`, `.automagic/*`); so is a committed brief. Nodes that declare no files skip the warning but not the error, so list such a file in a node to be allowed to change it.
 - **size**: more changed lines than `max_changed_lines` is an error; far above the node estimates is a warning.
 - **guardrails**: `automagic check` problems in changed files are errors.
 - **verify** (`--verify`) and **ai** (`--ai`, via the provider, truncated to half the context budget).
@@ -100,6 +101,8 @@ The default provider runs prompts through the GitHub Copilot CLI (`copilot -p`).
 Token counts are estimated (about 4 characters per token).
 
 ## Development
+
+`uv run pytest` measures source coverage and requires at least 90%.
 
 ```sh
 uv run pytest && uv run ruff check . && uv run bandit -c pyproject.toml -r src

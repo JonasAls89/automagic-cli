@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shlex
 import subprocess  # nosec B404
 from collections.abc import Callable
@@ -34,6 +36,7 @@ class ItemRun(BaseModel):
     detail: str = ""
     base: str = ""
     review: str = ""
+    hash: str = ""
 
 
 class RunState(BaseModel):
@@ -51,6 +54,55 @@ class RunState(BaseModel):
 
 class RunError(RuntimeError):
     pass
+
+
+def item_hash(graph: Graph, item: WorkItem) -> str:
+    """Scope of a work item: its nodes and their Merkle hashes, which cover prerequisites."""
+    payload = json.dumps([[nid, graph.node_hash(nid)] for nid in item.node_ids])
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def stale_items(graph: Graph, items: list[WorkItem], state: RunState) -> list[str]:
+    """Items already run whose nodes changed since, so their saved work no longer matches."""
+    if state.root_hash == graph.root_hash():
+        return []
+    return [
+        i.id
+        for i in items
+        if (run := state.items.get(i.id))
+        and run.status != PENDING
+        and run.hash != item_hash(graph, i)
+    ]
+
+
+def finished(graph: Graph, items: list[WorkItem], state: RunState) -> set[str]:
+    stale = set(stale_items(graph, items, state))
+    return {k for k, r in state.items.items() if r.status == DONE and k not in stale}
+
+
+def adopt_plan(graph: Graph, items: list[WorkItem], state: RunState) -> list[str]:
+    """Reset stale items to pending and move the state to the current plan.
+
+    The branch, worktree and base of a reset item are kept, so its agent continues on the
+    existing work and a review still sees everything the item changed. Returns the reset ids.
+    """
+    stale = stale_items(graph, items, state)
+    for item in items:
+        if run := state.items.get(item.id):
+            if item.id in stale:
+                run.status, run.detail, run.log, run.review = PENDING, "", "", ""
+            run.hash = item_hash(graph, item)
+    state.root_hash = graph.root_hash()
+    return stale
+
+
+def fresh_state(graph: Graph, old: RunState | None) -> RunState:
+    """Empty run state that keeps the base of branches whose worktree still exists."""
+    state = RunState(root_hash=graph.root_hash())
+    for key, run in (old.items if old else {}).items():
+        if run.base and run.path and Path(run.path).is_dir():
+            state.items[key] = ItemRun(base=run.base)
+    return state
 
 
 def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -112,20 +164,28 @@ def agent_command(cfg: Config, prompt: str = PROMPT) -> list[str]:
 def prepare_worktree(
     graph: Graph, prop: Proposal, items: list[WorkItem], props: dict[str, Proposal], repo: Path
 ) -> None:
-    """Create the worktree off its first prerequisite branch and merge the others in."""
+    """Create the worktree off its first prerequisite branch and merge in every prerequisite.
+
+    Safe to repeat: the worktree may already exist (`automagic worktrees --create`, or a retry
+    after a failed merge), so each prerequisite not yet in its history is merged now.
+    """
+    bases = [props[d].branch for d in prop.item.depends_on]
     if not prop.path.exists():
-        bases = [props[d].branch for d in prop.item.depends_on]
         cmd = ["worktree", "add", "-b", prop.branch, str(prop.path), bases[0] if bases else "HEAD"]
         if git(["rev-parse", "--verify", "-q", prop.branch], repo).returncode == 0:
             cmd = ["worktree", "add", str(prop.path), prop.branch]
         result = git(cmd, repo)
         if result.returncode != 0:
             raise RunError(f"git {' '.join(cmd)}: {result.stderr.strip()}")
-        for other in bases[1:]:
-            merged = git(["merge", "--no-edit", other], prop.path)
-            if merged.returncode != 0:
-                git(["merge", "--abort"], prop.path)
-                raise RunError(f"merging {other} into {prop.branch} conflicts")
+    for other in bases:
+        if git(["merge-base", "--is-ancestor", other, "HEAD"], prop.path).returncode == 0:
+            continue
+        merged = git(["merge", "--no-edit", other], prop.path)
+        if merged.returncode != 0:
+            git(["merge", "--abort"], prop.path)
+            error = merged.stderr.strip().splitlines()
+            reason = "conflicts" if "CONFLICT" in merged.stdout else (error or ["failed"])[0]
+            raise RunError(f"merging {other} into {prop.branch}: {reason}")
     brief_file = prop.path / BRIEF_PATH
     brief_file.parent.mkdir(parents=True, exist_ok=True)
     brief_file.write_text(brief(graph, prop, items))
@@ -157,7 +217,12 @@ def _run_logged(cmd: list[str], cwd: Path, log: Path, timeout: int) -> int:
             return 127
 
 
-def execute(prop: Proposal, cfg: Config, log: Path) -> tuple[str, str]:
+def _has_changes(path: Path, base: str) -> bool:
+    """True if HEAD differs from `base`; unknown or unreadable bases never fail an item."""
+    return not base or git(["diff", "--quiet", base, "HEAD"], path).returncode != 0
+
+
+def execute(prop: Proposal, cfg: Config, log: Path, base: str = "") -> tuple[str, str]:
     """Run the agent, commit its work, then gate on the verify command. Returns (status, detail)."""
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("")
@@ -166,6 +231,8 @@ def execute(prop: Proposal, cfg: Config, log: Path) -> tuple[str, str]:
         return FAILED, f"agent exited with {code}"
     try:
         _commit_all(prop.path, f"{prop.item.id}: implement work item")
+        if not _has_changes(prop.path, base):
+            return FAILED, "agent made no changes"
         if cfg.verify_command.strip():
             verify = shlex.split(cfg.verify_command)
             code = _run_logged(verify, prop.path, log, cfg.agent_timeout)
@@ -195,6 +262,7 @@ def run_plan(
     for item in items:
         run = state.items.setdefault(item.id, ItemRun())
         run.branch, run.path = by_id[item.id].branch, str(by_id[item.id].path)
+        run.hash = item_hash(graph, item)
         if run.status != DONE and (only is None or item.id in only):
             run.status, run.detail = PENDING, ""
 
@@ -240,7 +308,7 @@ def run_plan(
                 log = log_dir / f"{item.id}.log"
                 state.items[item.id].log = str(log)
                 update(item.id, RUNNING)
-                futures[item.id] = pool.submit(execute, prop, cfg, log)
+                futures[item.id] = pool.submit(execute, prop, cfg, log, state.items[item.id].base)
             for item_id, future in futures.items():
                 try:
                     status, detail = future.result()

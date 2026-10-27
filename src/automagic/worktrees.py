@@ -16,10 +16,11 @@ class Proposal:
     item: WorkItem
     branch: str
     path: Path
+    base: str = "HEAD"
 
     @property
     def command(self) -> list[str]:
-        return ["git", "worktree", "add", "-b", self.branch, str(self.path)]
+        return ["git", "worktree", "add", "-b", self.branch, str(self.path), self.base]
 
 
 def _slug(text: str) -> str:
@@ -58,6 +59,8 @@ def propose(graph: Graph, items: list[WorkItem], repo: Path) -> list[Proposal]:
             item=item,
             branch=f"automagic/{goal}/{item.id}",
             path=base / f"{goal}-{item.id}",
+            # Like `automagic run`: dependents start from their first prerequisite's branch.
+            base=f"automagic/{goal}/{item.depends_on[0]}" if item.depends_on else "HEAD",
         )
         for item in items
     ]

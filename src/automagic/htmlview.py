@@ -246,7 +246,8 @@ function render() {
 document.getElementById('goal').textContent = D.goal;
 document.getElementById('meta').textContent = 'root hash ' + D.rootHash;
 if (D.stale) document.getElementById('stale').append(
-  el('div', 'The saved run is stale: the plan changed since it started. Use run --restart.',
+  el('div', 'The saved run is stale: the plan changed since it started. ' +
+    'Use run --update to redo only the changed work items, or run --restart.',
     'warn'));
 document.getElementById('all').onclick = () => {
   D.items.filter(i => !isDone(i.id)).forEach(i => explicit.add(i.id)); render();
