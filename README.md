@@ -22,7 +22,7 @@ uv tool install .        # or: uv run automagic ...
 | `automagic worktrees [--create] [--yes]` | `/automagic-worktrees` | Shows or creates worktrees for the saved plan, each with a `.automagic/BRIEF.md`. |
 
 Python projects get uv, ruff, bandit and zizmor in the pre-commit config; TypeScript projects get eslint, prettier and zizmor. Hooks are run with [prek](https://github.com/j178/prek) (`prek install`, `prek run --all-files`), which reads `.pre-commit-config.yaml`.
-Slash commands are written as `.github/prompts/*.prompt.md` (VS Code) and `.github/skills/*/SKILL.md` (Copilot CLI).
+Slash commands are supported in the VS Code extension and `.github/skills/*/SKILL.md` (Copilot CLI).
 
 ## How planning works
 
