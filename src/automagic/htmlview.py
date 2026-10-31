@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from automagic.merkle import Graph
+from automagic.render import render_work_breakdown
 from automagic.runner import RunState
 from automagic.sizing import WorkItem
 
@@ -45,7 +46,9 @@ def view_data(graph: Graph, items: list[WorkItem], state: RunState | None) -> di
 def render_html(graph: Graph, items: list[WorkItem], state: RunState | None) -> str:
     # "</" is escaped so node text can never close the script element.
     data = json.dumps(view_data(graph, items, state)).replace("</", "<\\/")
-    return _PAGE.replace("__DATA__", data)
+    return _PAGE.replace(
+        "__BREAKDOWN__", render_work_breakdown(graph, items, item_label="node")
+    ).replace("__DATA__", data)
 
 
 _PAGE = """<!doctype html>
@@ -54,6 +57,7 @@ _PAGE = """<!doctype html>
 <style>
 body{font:14px system-ui,sans-serif;margin:1.5rem;color:#222}
 h1{font-size:1.2rem;margin:0}.meta{color:#666;margin:.2rem 0 1rem;font-size:12px}
+h2{font-size:1rem;margin:0 0 .5rem}
 .warn{background:#fff3cd;border:1px solid #e0c36a;padding:.5rem;margin-bottom:1rem}
 .layout{display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-start}
 .graph{flex:1 1 300px;overflow:auto;min-width:0}
@@ -84,7 +88,9 @@ overflow-x:auto}
 button{margin-right:.5rem}
 </style></head><body>
 <h1 id="goal"></h1><div class="meta" id="meta"></div><div id="stale"></div>
-<p class="small">Tick a work item: its unfinished prerequisites are selected automatically
+<h2>__BREAKDOWN__</h2>
+<p class="small">Each graph node represents a work item containing one or more planning topics.
+Tick a work item: its unfinished prerequisites are selected automatically
 (dashed). Finished items are never selected. Run the command below to create the
 worktrees and start the agents.</p>
 <div><button id="all">Select all remaining</button><button id="none">Clear</button></div>
@@ -171,6 +177,7 @@ function renderPanel(item, state, sel, waveOf) {
   if (item.status === 'failed' || item.status === 'blocked')
     card.append(el('div', (item.detail || item.status) + '; selecting it retries it', 'small'));
   if (item.oversized) card.append(el('div', 'oversized work item', 'small'));
+  card.append(el('div', 'Planning topics', 'small'));
   for (const n of item.nodes) {
     const d = el('details', undefined, 'node');
     d.append(el('summary', n.title + ' (' + n.hash.slice(0, 8) + ')'));

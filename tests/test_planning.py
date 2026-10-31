@@ -92,6 +92,7 @@ def test_interview_stops_on_user_done_and_on_round_cap():
     provider = scripted(SEED, {"db": ["q"] * 10})
     g = seed_graph(provider, "goal", "ctx")
     assert not run_interview(g, provider, lambda q: None).converged
+    g = seed_graph(provider, "goal", "ctx")
     result = run_interview(g, provider, lambda q: "a", max_rounds=2)
     assert not result.converged and result.rounds == 2
 

@@ -1,7 +1,7 @@
 """Progress feedback while the planning interview runs.
 
-The number of nodes can grow and settled nodes can be re-opened by an answer, so no percentage
-is promised: the line shows settled/total and a lower bound on the checks still to come.
+Answers can add planning topics or re-open settled topics. The summary shows the current
+settled/total and pending topic counts, not a forecast of the questions still to come.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ class Progress:
 
     @property
     def to_go(self) -> int:
-        """Unsettled nodes; each needs at least one more check, so this is a lower bound."""
+        """Current number of unsettled planning topics."""
         return self.total - self.settled
 
 
@@ -49,10 +49,10 @@ def _plural(n: int, word: str) -> str:
 
 def summary(p: Progress) -> str:
     return (
-        f"{bar(p.settled, p.total)} {p.settled}/{p.total} settled"
-        f" · round {p.round_no}/{p.max_rounds}"
-        f" · {p.left_in_round} left this round"
-        f" · at least {_plural(p.to_go, 'check')} to go"
+        f"Planning: {bar(p.settled, p.total)} {p.settled}/{_plural(p.total, 'topic')} settled"
+        f" · pass {p.round_no}/{p.max_rounds}\n"
+        f"{_plural(p.left_in_round, 'topic')} pending this pass"
+        f" · {p.to_go} unsettled overall"
     )
 
 
@@ -60,9 +60,9 @@ def delta(p: Progress) -> str:
     """What an answer changed; empty when it neither added nor re-opened nodes."""
     parts = []
     if p.added:
-        parts.append(f"+{_plural(p.added, 'new node')}")
+        parts.append(f"+{_plural(p.added, 'new topic')}")
     if p.reopened:
-        parts.append(f"{_plural(p.reopened, 'settled node')} re-opened")
+        parts.append(f"{_plural(p.reopened, 'settled topic')} re-opened")
     return ("answer applied: " + ", ".join(parts)) if parts else ""
 
 
@@ -85,11 +85,17 @@ class Reporter:
             if line := delta(p):
                 self._print(line)
         elif p.phase == "revising":
-            self._spin(f"Applying your answer to {p.node}...")
+            self._spin(f"Applying your answer to topic {p.node}...")
         elif p.phase == "checking":
-            self._spin(f"Checking {p.node}  {bar(p.settled, p.total)} {p.settled}/{p.total}")
+            self._spin(
+                f"Reviewing topic {p.node}  {bar(p.settled, p.total)} "
+                f"{p.settled}/{_plural(p.total, 'topic')} settled"
+            )
         else:
-            self._spin(f"Settled {p.node}  {bar(p.settled, p.total)} {p.settled}/{p.total}")
+            self._spin(
+                f"Settled topic {p.node}  {bar(p.settled, p.total)} "
+                f"{p.settled}/{_plural(p.total, 'topic')} settled"
+            )
 
     @contextmanager
     def working(self, message: str) -> Iterator[None]:

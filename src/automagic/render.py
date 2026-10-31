@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal
 
 from automagic.config import Config
 from automagic.merkle import Graph
@@ -58,7 +59,7 @@ def render_history(events: list[dict]) -> list[str]:
     if not events:
         return ["_No interview history recorded._"]
     lines = [
-        "| Round | Node | Event | Question | Answer | Hash | Invalidated |",
+        "| Interview pass | Planning topic | Event | Question | Answer | Hash | Invalidated |",
         "|---|---|---|---|---|---|---|",
     ]
     for e in events:
@@ -85,6 +86,18 @@ def hash_chain(graph: Graph, nid: str, depth: int = 0) -> list[str]:
     return out
 
 
+def render_work_breakdown(
+    graph: Graph,
+    items: list[WorkItem],
+    *,
+    item_label: Literal["work item", "node"] = "work item",
+) -> str:
+    item_count, topic_count = len(items), len(graph.nodes)
+    items_label = item_label if item_count == 1 else f"{item_label}s"
+    topic_label = "planning topic" if topic_count == 1 else "planning topics"
+    return f"Work breakdown: {item_count} {items_label} covering {topic_count} {topic_label}"
+
+
 def render_plan(
     graph: Graph, items: list[WorkItem], cfg: Config, history: list[dict] | None = None
 ) -> str:
@@ -101,9 +114,9 @@ def render_plan(
         render_mermaid(graph, items),
         "```",
         "",
-        "## Work items",
+        f"## {render_work_breakdown(graph, items)}",
         "",
-        "| Work item | Nodes | Est. tokens | Est. lines | Depends on | Flags |",
+        "| Work item | Planning topics | Est. tokens | Est. lines | Depends on | Flags |",
         "|---|---|---|---|---|---|",
     ]
     for item in items:

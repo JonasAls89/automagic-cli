@@ -46,6 +46,7 @@ def test_in_scope_work_passes_and_diffs_only_the_agents_own_commits(tmp_path):
     out = review(repo, "wi-02")
     assert out.exit_code == 0, out.output
     assert "Verdict: **pass**" in out.output
+    assert "Planning topics: b" in out.output
     # wi-02 is branched off wi-01, but only wi-02's own file is reviewed
     assert "1 files" in out.output and "`wi-01.txt`" not in out.output
     assert (repo / ".automagic" / "plan" / "reviews" / "wi-02.md").exists()
@@ -103,6 +104,7 @@ def test_ordinary_files_pass_when_nodes_declare_no_files(tmp_path):
     run_all(repo)
     out = review(repo, "wi-01")
     assert out.exit_code == 0 and "Verdict: **pass**" in out.output
+    assert "Planning topics declare no files" in out.output
 
 
 def test_size_budget_is_enforced(tmp_path):

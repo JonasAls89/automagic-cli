@@ -132,7 +132,7 @@ def waves(items: list[WorkItem]) -> list[list[str]]:
 
 
 def select(items: list[WorkItem], only: list[str], done: set[str]) -> set[str]:
-    """Work item ids to run for the given work item or node ids.
+    """Work item ids to run for the given work item or planning topic ids.
 
     Unfinished prerequisites are pulled in transitively; items in `done` are left out.
     """
@@ -143,7 +143,7 @@ def select(items: list[WorkItem], only: list[str], done: set[str]) -> set[str]:
     for ident in only:
         target = ident if ident in by_id else owner.get(ident)
         if target is None:
-            raise RunError(f"unknown work item or node {ident!r}")
+            raise RunError(f"unknown work item or planning topic {ident!r}")
         stack.append(target)
     while stack:
         current = stack.pop()

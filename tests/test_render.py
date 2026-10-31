@@ -78,6 +78,9 @@ def test_plan_contains_mermaid_and_history(tmp_path):
     ]
     text = render_plan(g, items, Config(), history)
     assert "```mermaid" in text and "## Interview history" in text
+    assert "## Work breakdown: 2 work items covering 2 planning topics" in text
+    assert "| Work item | Planning topics |" in text
+    assert "| Interview pass | Planning topic |" in text
     assert "a \\| b?" in text and g.root_hash() in text
 
 

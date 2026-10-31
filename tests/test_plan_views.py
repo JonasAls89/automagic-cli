@@ -32,7 +32,7 @@ def test_select_adds_unfinished_prerequisites_only():
     assert select(ITEMS, ["wi-04"], {"wi-01", "wi-02"}) == {"wi-03", "wi-04"}
     assert select(ITEMS, ["d"], {"wi-01", "wi-02", "wi-03"}) == {"wi-04"}
     assert select(ITEMS, ["wi-01"], {"wi-01"}) == set()
-    with pytest.raises(RunError):
+    with pytest.raises(RunError, match="unknown work item or planning topic 'nope'"):
         select(ITEMS, ["nope"], set())
 
 
@@ -61,6 +61,8 @@ def test_show_writes_node_docs_html_and_detects_stale_docs(tmp_path):
     assert (docs / "graph.json").exists() and (docs / "_index.md").exists()
     doc = (docs / "b.md").read_text()
     assert "## Agreed scope" in doc and "do b" in doc and "[A](a.md)" in doc
+    assert "Planning topic `b`" in doc
+    assert "| Planning topic | Work item |" in (docs / "_index.md").read_text()
     assert (repo / ".automagic" / "plan" / "plan.html").exists()
     assert guardrails.check(repo, Config()) == []
     (docs / "b.md").write_text(f"<!-- automagic:node b {'0' * 64} -->\n" + doc.split("\n", 1)[1])
@@ -77,7 +79,7 @@ def test_graph_loads_from_committed_docs_when_state_is_missing(tmp_path):
 
 def test_html_embeds_status_and_escapes_script_end():
     g = Graph(goal="G")
-    g.add(Node(id="a", title="A", content="</script><b>x</b>"))
+    g.add(Node(id="a", title="A", content="</script><b>x</b> __BREAKDOWN__"))
     g.add(Node(id="b", title="B", content="b", depends_on=["a"]))
     items = partition(g, Path(), Config())
     state = RunState(root_hash="old", items={items[0].id: ItemRun(status="done")})
@@ -85,6 +87,7 @@ def test_html_embeds_status_and_escapes_script_end():
     assert data["stale"] and data["items"][0]["status"] == "done"
     page = render_html(g, items, state)
     assert "</script><b>" not in page
+    assert "__BREAKDOWN__" in page
     assert page.count("</script>") == 2
 
 
@@ -93,6 +96,44 @@ def test_html_renders_circular_graph_with_detail_panel():
     g.add(Node(id="a", title="A", content="a"))
     page = render_html(g, partition(g, Path(), Config()), None)
     assert 'id="graph"' in page and 'id="panel"' in page and "createElementNS" in page
+    assert "Planning topics" in page
+    assert "Each graph node represents a work item containing one or more planning topics." in page
+
+
+def test_html_distinguishes_eight_graph_nodes_from_nineteen_planning_topics(tmp_path):
+    g = Graph(goal="Example plan")
+    for i in range(19):
+        g.add(
+            Node(
+                id=f"topic-{i:02d}",
+                title=f"Topic {i}",
+                content="Scope",
+                est_lines=125 if i < 9 else 175,
+            )
+        )
+    items = partition(g, tmp_path, Config(max_changed_lines=400, max_context_tokens=40_000))
+    assert len(items) == 8
+    page = render_html(g, items, None)
+    assert "<h2>Work breakdown: 8 nodes covering 19 planning topics</h2>" in page
+    data = view_data(g, items, None)
+    assert len(data["items"]) == 8
+    assert sum(len(item["nodes"]) for item in data["items"]) == 19
+
+
+@pytest.mark.parametrize(
+    ("topic_count", "expected"),
+    [
+        (0, "Work breakdown: 0 nodes covering 0 planning topics"),
+        (1, "Work breakdown: 1 node covering 1 planning topic"),
+        (2, "Work breakdown: 1 node covering 2 planning topics"),
+    ],
+)
+def test_html_work_breakdown_handles_zero_and_singular_counts(tmp_path, topic_count, expected):
+    g = Graph(goal="Example plan")
+    for i in range(topic_count):
+        g.add(Node(id=f"topic-{i}", title=f"Topic {i}", content="Scope"))
+    items = partition(g, tmp_path, Config())
+    assert f"<h2>{expected}</h2>" in render_html(g, items, None)
 
 
 def test_amend_marks_touched_nodes_and_conflicts():
@@ -139,7 +180,9 @@ def test_plan_amend_cli_revalidates_and_logs(tmp_path, monkeypatch):
     monkeypatch.setattr("automagic.cli.get_provider", lambda cfg: FakeProvider(reply))
     out = runner.invoke(app, ["plan", "--amend", "change a", "--path", str(repo), "--no-create"])
     assert out.exit_code == 0, out.output
-    assert "Agreed nodes invalidated and re-examined: b, c, d" in out.output
+    assert "Edited planning topics: a" in out.output
+    assert "New planning topics: -" in out.output
+    assert "Settled planning topics re-opened for review: b, c, d" in out.output
     graph = Graph.load(repo / ".automagic" / "plan" / "graph.json")
     assert graph.is_stable() and graph.nodes["a"].content == "do a differently"
     history = (repo / ".automagic" / "plan" / "history.jsonl").read_text()
