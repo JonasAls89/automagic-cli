@@ -356,7 +356,7 @@ def show(
     graph = _load_graph(root)
     if node:
         if node not in graph.nodes:
-            typer.echo(f"error: unknown node {node!r}", err=True)
+            typer.echo(f"error: unknown planning topic {node!r}", err=True)
             raise typer.Exit(1)
         typer.echo("\n".join(render.hash_chain(graph, node)))
         return
@@ -380,14 +380,16 @@ def run(
     restart: Annotated[bool, typer.Option(help="Discard saved run state.")] = False,
     update: Annotated[
         bool,
-        typer.Option(help="After a plan change, redo only work items whose nodes changed."),
+        typer.Option(
+            help="After a plan change, redo only work items whose planning topics changed."
+        ),
     ] = False,
     yes: Annotated[bool, typer.Option(help="Skip the confirmation prompt.")] = False,
     max_concurrency: Annotated[int | None, typer.Option(help="Parallel agents per wave.")] = None,
     only: Annotated[
         list[str] | None,
         typer.Option(
-            help="Work item or node ids, comma-separated or repeated. "
+            help="Work item or planning topic ids, comma-separated or repeated. "
             "Unfinished prerequisites are added automatically."
         ),
     ] = None,
@@ -485,7 +487,8 @@ def run(
 @app.command()
 def review(
     target: Annotated[
-        str | None, typer.Argument(help="Work item id, node id or branch; default: current branch.")
+        str | None,
+        typer.Argument(help="Work item id, planning topic id or branch; default: current branch."),
     ] = None,
     path: PathOpt = Path(),
     base: Annotated[str | None, typer.Option(help="Override the diff base commit.")] = None,
@@ -494,7 +497,7 @@ def review(
         bool, typer.Option(help="Add an AI review of the diff via the provider.")
     ] = False,
 ) -> None:
-    """Review a work item's branch against its nodes, the guardrails and the initial scope."""
+    """Review a work item's branch against its planning topics, guardrails and initial scope."""
     root = path.resolve()
     cfg = load_config(root)
     graph = _load_graph(root)

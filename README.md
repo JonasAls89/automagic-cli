@@ -26,41 +26,49 @@ Slash commands are written as `.github/prompts/*.prompt.md` (VS Code) and `.gith
 
 ## How planning works
 
-1. A provider drafts a graph of assumptions and decisions. Each node's hash covers its content and its dependencies' hashes.
-2. For each unvalidated node (dependencies first) the interviewer asks a question or declares it settled. An answer revises the node, which changes its hash and its ancestors', invalidating them.
-3. Rounds repeat until a round leaves every node validated, or `max_rounds` is hit (resume with `--resume`). Type `/done` to stop early.
-4. Oversized nodes are split by the provider, then nodes are packed dependencies-first into work items under the token and changed-line budgets.
+1. A provider drafts planning topics (assumptions and decisions), stored as nodes in a Merkle graph. Each topic's hash covers its content and its dependencies' hashes.
+2. For each unsettled topic (dependencies first) the interviewer reviews it, then asks a question or declares it settled. An answer revises the topic, which changes its hash and its dependents' hashes, re-opening their previous agreement.
+3. Interview passes repeat until every topic is settled, or `max_rounds` is hit. Type `/done` to pause; `--resume` continues the saved pass and queue.
+4. Oversized topics are split by the provider, then topics are packed dependencies-first into work items under the token and changed-line budgets.
 5. Worktrees are proposed as `git worktree add` commands and created only on confirmation.
+
+Planning topics are what the interview settles; work items are what agents implement. One work item can contain several topics, so 19 planning topics can become eight work items ([sizing.py](src/automagic/sizing.py)).
+
+Pause/resume preserves the exact unanswered question without another question-generation call. Submitted answers are saved before the provider revises a topic, so `--resume` also recovers after Ctrl+C or a provider failure without asking for that answer again; failed calls are not retried automatically. A paused pass keeps its existing budget. After exhaustion, an explicit `--resume` adds another configured batch: with eight interview passes per batch, the next pass is `9/16`, not `1/8` ([interview.py](src/automagic/interview.py)).
+
+Older plans without a checkpoint retain their decisions but start a fresh validation pass with a notice. If a checkpoint is invalid or no longer matches the graph, the CLI asks before discarding the saved position and any unapplied input; declining leaves the files unchanged. Invalid graph data remains an error ([cli.py](src/automagic/cli.py)).
 
 Before each question the CLI prints where you are ([progress.py](src/automagic/progress.py)), and shows a spinner while the provider works:
 
 ```
-[########------------] 4/10 settled · round 2/8 · 5 left this round · at least 6 checks to go
+Planning: [########------------] 4/10 topics settled · pass 2/8
+5 topics pending this pass · 6 unsettled overall
 ```
 
-- `settled/total` counts nodes whose current hash equals their validated hash.
-- `left this round` is the nodes still to be checked in the current round.
-- `at least N checks to go` is the number of unsettled nodes. It is a lower bound, not a forecast: the interviewer decides whether to ask follow-ups, so there is no percentage.
-- Counts can move backwards. After an answer, `answer applied: +1 new node, 2 settled nodes re-opened` says why: the answer added nodes or changed a node that settled nodes depend on.
+- `settled/total topics` counts topics whose current hash equals their validated hash. Settled planning topics are not completed implementation work.
+- `pass N/M` identifies the current interview pass and its limit, not the number of work items.
+- `N topics pending this pass` counts unsettled topics in the saved pass's queue, including the current topic.
+- `N unsettled overall` is the exact current number of unsettled topics across the plan, not a forecast of the questions remaining. A topic review can settle it without asking a question.
+- Counts can move backwards. After an answer, `answer applied: +1 new topic, 2 settled topics re-opened` says why: the answer added topics or changed a topic that settled topics depend on. New or re-opened topics outside the current queue wait for another pass.
 
 State is stored in `.automagic/plan/`; commit it so reviewers can inspect the plan:
 
-- `graph.json`: the Merkle graph and resume state.
+- `graph.json`: the Merkle graph and versioned interview checkpoint, saved together atomically; the checkpoint does not affect Merkle hashes ([merkle.py](src/automagic/merkle.py)).
 - `history.jsonl`: one event per validation, answer or amendment (question, answer, old/new hash, invalidated ancestors).
-- `plan.md`: Mermaid graph (work items as subgraphs, oversized ones outlined red), work-item table, node details with full hashes, and the interview history table.
-- `plan.html`: a self-contained page (`automagic show --open`). Tick a work item and its unfinished prerequisites are selected automatically (dashed); finished items are skipped. The page prints `automagic run --only <ids>` in dependency order; run it to create the worktrees and start the agents. The page itself launches nothing. Failed items are selectable again to retry them.
+- `plan.md`: Mermaid graph (work items as subgraphs, oversized ones outlined red), work-item table, planning topic details with full hashes, and the interview history table.
+- `plan.html`: a self-contained page (`automagic show --open`). Its heading distinguishes the two counts, for example `Work breakdown: 8 nodes covering 19 planning topics`. Each graph node represents a work item containing one or more planning topics. Hover over a node to inspect its topics. Tick a work item and its unfinished prerequisites are selected automatically (dashed); finished items are skipped. The page prints `automagic run --only <ids>` in dependency order; run it to create the worktrees and start the agents. The page itself launches nothing. Failed items are selectable again to retry them ([htmlview.py](src/automagic/htmlview.py)).
 
-`docs/plan/` is meant to be committed: `<node>.md` holds each node's agreed scope, files, dependencies, hash chain and interview decisions, and `graph.json` lets a fresh clone continue the plan. `automagic check` reports node documents that are out of date with the graph; `automagic show` regenerates them. See [ADR 0003](docs/adr/0003-committed-plan-documents.md).
+`docs/plan/` is meant to be committed: `<topic-id>.md` holds each topic's agreed scope, files, dependencies, hash chain and interview decisions, and `graph.json` lets a fresh clone continue the plan. That published graph omits the runtime interview checkpoint ([plandocs.py](src/automagic/plandocs.py)); preserve `.automagic/plan/graph.json` too for exact in-pass continuation. `automagic check` reports topic documents that are out of date with the graph; `automagic show` regenerates them. Internal names such as `node`, `round` and `max_rounds` in saved data and configuration are unchanged. See [ADR 0003](docs/adr/0003-committed-plan-documents.md) and [ADR 0005](docs/adr/0005-atomic-interview-checkpoints.md).
 
 ## Changing a finished plan
 
-`automagic plan --amend "<change>"` edits or adds nodes. Nodes that depend on them get new hashes and are re-examined by the interview; the rest stay validated. The command lists edited, new and invalidated nodes, and asks before applying a change that contradicts agreed intent (`--yes` accepts). The old run state is then stale: `automagic run` lists the stale work items, and `automagic run --update` redoes only those (see below).
+`automagic plan --amend "<change>"` edits or adds planning topics. Topics that depend on them get new hashes and are re-examined by the interview; the rest stay settled. The command lists edited, new and re-opened topics, and asks before applying a change that contradicts agreed intent (`--yes` accepts). The old run state is then stale: `automagic run` lists the stale work items, and `automagic run --update` redoes only those (see below).
 
 ## Running agents
 
 `automagic run` executes the saved plan:
 
-`automagic run --only wi-02,wi-04` (work item or node ids) runs just those items plus any unfinished prerequisites; finished items are skipped.
+`automagic run --only wi-02,wi-04` (work item or planning topic ids) runs just those items plus any unfinished prerequisites; finished items are skipped.
 
 1. Work items run in waves: every item whose prerequisites are done runs in parallel, up to `max_concurrency`.
 2. A dependent worktree is branched off its first prerequisite branch, and every prerequisite branch not yet in its history is merged in, also when the worktree already exists (for example from `automagic worktrees --create`) or when an earlier attempt failed on a merge conflict.
@@ -73,14 +81,14 @@ The default runner denies `git push` and `git merge` via `--deny-tool`, which is
 
 ## Reviewing work
 
-`automagic review wi-02` (a work item id, a node id, or a branch; with no target it uses the current branch, so run it as `automagic review --path <project>` from inside a worktree) diffs the agent's own commits: the base is the commit recorded when `automagic run` prepared the worktree, so merged-in prerequisites are not counted. Findings:
+`automagic review wi-02` (a work item id, a planning topic id, or a branch; with no target it uses the current branch, so run it as `automagic review --path <project>` from inside a worktree) diffs the agent's own commits: the base is the commit recorded when `automagic run` prepared the worktree, so merged-in prerequisites are not counted. Findings:
 
-- **scope**: changed files not declared by the item's nodes are warnings; changes to guardrail, CI or config files outside the declared files are errors (`GUARDED` in [review.py](src/automagic/review.py): `AGENTS.md`, `docs/GUARDRAILS.md`, `.github/workflows|prompts|skills|instructions/*`, `.pre-commit-config.yaml`, `pyproject.toml`, `eslint.config.js`, `.automagic/*`); so is a committed brief. Nodes that declare no files skip the warning but not the error, so list such a file in a node to be allowed to change it.
-- **size**: more changed lines than `max_changed_lines` is an error; far above the node estimates is a warning.
+- **scope**: changed files not declared by the item's planning topics are warnings; changes to guardrail, CI or config files outside the declared files are errors (`GUARDED` in [review.py](src/automagic/review.py): `AGENTS.md`, `docs/GUARDRAILS.md`, `.github/workflows|prompts|skills|instructions/*`, `.pre-commit-config.yaml`, `pyproject.toml`, `eslint.config.js`, `.automagic/*`); so is a committed brief. Topics that declare no files skip the warning but not the error, so list such a file in a planning topic to be allowed to change it.
+- **size**: more changed lines than `max_changed_lines` is an error; far above the topic estimates is a warning.
 - **guardrails**: `automagic check` problems in changed files are errors.
 - **verify** (`--verify`) and **ai** (`--ai`, via the provider, truncated to half the context budget).
 
-The deterministic checks cannot judge whether the code does what the node asks. For that, use `/automagic-review`: it tells the agent to read the report, review the diff against the node and guardrails, and use the GitKraken MCP tools (`git_log_or_diff` for the diff and log, `git_commit_composer` to propose commit grouping and messages for uncommitted work, `gitlens_start_review` for an existing pull request) when they are available, falling back to plain git. The CLI itself does not call MCP tools.
+The deterministic checks cannot judge whether the code does what the planning topic asks. For that, use `/automagic-review`: it tells the agent to read the report, review the diff against the planning topic and guardrails, and use the GitKraken MCP tools (`git_log_or_diff` for the diff and log, `git_commit_composer` to propose commit grouping and messages for uncommitted work, `gitlens_start_review` for an existing pull request) when they are available, falling back to plain git. The CLI itself does not call MCP tools.
 
 ## Configuration
 

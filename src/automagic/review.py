@@ -180,7 +180,9 @@ def collect(
                 review.add(INFO, "scope", "Declared file was not changed", d)
     else:
         review.add(
-            INFO, "scope", "Nodes declare no files; only guardrail/CI/config files are checked"
+            INFO,
+            "scope",
+            "Planning topics declare no files; only guardrail/CI/config files are checked",
         )
 
     if review.lines > cfg.max_changed_lines:
@@ -275,7 +277,7 @@ def render(review: Review) -> str:
         f"Worktree: `{review.path}`",
         f"Diff: `{review.base}..{review.branch}` ({len(review.files)} files, "
         f"{review.lines} changed lines, {len(review.commits)} commits)",
-        f"Nodes: {', '.join(review.item.node_ids)}",
+        f"Planning topics: {', '.join(review.item.node_ids)}",
         "",
         "## Findings",
         "",
