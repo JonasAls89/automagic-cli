@@ -6,14 +6,23 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from uuid import uuid4
 
-from automagic.merkle import Graph, Node
+from automagic.merkle import (
+    AnsweredEvent,
+    Graph,
+    GraphError,
+    InterviewCheckpoint,
+    InterviewEvent,
+    Node,
+    ValidatedEvent,
+)
 from automagic.progress import Phase, Progress
 from automagic.providers import Provider, ProviderError
 
 Ask = Callable[[str], str | None]
 Notify = Callable[[Graph], None]
-Event = Callable[[dict], None]
+Event = Callable[[InterviewEvent], None]
 OnProgress = Callable[[Progress], None]
 
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
@@ -76,6 +85,7 @@ class InterviewResult:
     rounds: int
     converged: bool
     questions_asked: int
+    paused: bool = False
 
 
 def parse_json(text: str) -> dict:
@@ -156,21 +166,47 @@ def run_interview(
     on_event: Event | None = None,
     on_progress: OnProgress | None = None,
 ) -> InterviewResult:
-    """Question the user until every node hash stays valid for a whole round.
-
-    Answers that revise a node change its hash and those of all its ancestors,
-    so they are re-examined in the next round. A node is validated only when
-    the interviewer has no further question for it.
-    """
+    """Continue the saved pass; only a question-free check validates a node."""
+    if max_rounds <= 0:
+        raise ValueError("max_rounds must be positive")
+    graph.check()
+    graph.check_interview()
     asked = 0
 
-    def emit(event: dict) -> None:
-        if on_event:
-            on_event(event)
+    def persist() -> None:
+        if graph.interview is not None:
+            graph.interview.graph_hash = graph.interview_hash()
+        if on_change:
+            on_change(graph)
 
-    def report(
-        phase: Phase, round_no: int, nid: str, queue: list[str], added: int = 0, reopened: int = 0
-    ) -> None:
+    checkpoint = graph.interview
+    if checkpoint is None:
+        if graph.is_stable():
+            return InterviewResult(graph, 0, True, 0)
+        checkpoint = InterviewCheckpoint(
+            round_limit=max_rounds, pending=graph.invalid(), graph_hash=graph.interview_hash()
+        )
+        graph.interview = checkpoint
+        persist()
+
+    def flush_event() -> None:
+        if checkpoint.pending_event is not None:
+            if on_event:
+                on_event(checkpoint.pending_event)
+            checkpoint.pending_event = None
+            persist()
+
+    def finish(event: InterviewEvent) -> None:
+        checkpoint.pending.pop(0)
+        checkpoint.phase = "checking"
+        checkpoint.question = None
+        checkpoint.answer = None
+        checkpoint.pending_event = event
+        # Commit the graph and event together before appending to history.
+        persist()
+        flush_event()
+
+    def report(phase: Phase, nid: str, queue: list[str], added: int = 0, reopened: int = 0) -> None:
         if on_progress is None:
             return
         invalid = set(graph.invalid())
@@ -178,8 +214,8 @@ def run_interview(
         on_progress(
             Progress(
                 phase=phase,
-                round_no=round_no,
-                max_rounds=max_rounds,
+                round_no=checkpoint.round_no,
+                max_rounds=checkpoint.round_limit,
                 total=total,
                 settled=total - len(invalid),
                 left_in_round=sum(1 for n in queue if n in invalid),
@@ -189,16 +225,36 @@ def run_interview(
             )
         )
 
-    for round_no in range(1, max_rounds + 1):
-        pending = graph.invalid()
-        if not pending:
-            return InterviewResult(graph, round_no - 1, True, asked)
-        for index, nid in enumerate(pending):
-            if nid not in graph.nodes or nid not in graph.invalid():
-                continue
-            node = graph.nodes[nid]
-            queue = pending[index:]
-            report("checking", round_no, nid, queue)
+    flush_event()
+    if (
+        not checkpoint.pending
+        and checkpoint.round_no == checkpoint.round_limit
+        and not graph.is_stable()
+    ):
+        checkpoint.round_limit += max_rounds
+        persist()
+
+    while True:
+        if not checkpoint.pending:
+            if graph.is_stable():
+                graph.interview = None
+                persist()
+                return InterviewResult(graph, checkpoint.round_no, True, asked)
+            if checkpoint.round_no == checkpoint.round_limit:
+                return InterviewResult(graph, checkpoint.round_no, False, asked)
+            checkpoint.round_no += 1
+            checkpoint.pending = graph.invalid()
+            persist()
+
+        queue = checkpoint.pending.copy()
+        nid = queue[0]
+        if nid not in graph.invalid():
+            checkpoint.pending.pop(0)
+            persist()
+            continue
+        node = graph.nodes[nid]
+        if checkpoint.phase == "checking":
+            report("checking", nid, queue)
             reply = parse_json(
                 provider.complete(
                     QUESTION_PROMPT.format(
@@ -213,64 +269,77 @@ def run_interview(
             question = reply.get("question")
             if not question:
                 graph.validate(nid)
-                emit(
-                    {
-                        "event": "validated",
-                        "round": round_no,
-                        "node": nid,
-                        "hash": graph.node_hash(nid),
-                    }
-                )
-                report("settled", round_no, nid, queue)
-            else:
-                report("asking", round_no, nid, queue)
-                answer = ask(str(question))
-                if answer is None:
-                    return InterviewResult(graph, round_no, False, asked)
-                asked += 1
-                old_hash = graph.node_hash(nid)
-                already_invalid = set(graph.invalid())
-                known = set(graph.nodes)
-                report("revising", round_no, nid, queue)
-                revision = parse_json(
-                    provider.complete(
-                        REVISE_PROMPT.format(
-                            goal=graph.goal,
-                            id=nid,
-                            title=node.title,
-                            content=node.content,
-                            files=node.files,
-                            depends_on=node.depends_on,
-                            question=question,
-                            answer=answer,
-                        )
+                finish(
+                    ValidatedEvent(
+                        id=uuid4().hex,
+                        event="validated",
+                        round=checkpoint.round_no,
+                        node=nid,
+                        hash=graph.node_hash(nid),
                     )
                 )
-                _apply_revision(graph, nid, revision)
-                emit(
-                    {
-                        "event": "answered",
-                        "round": round_no,
-                        "node": nid,
-                        "question": str(question),
-                        "answer": answer,
-                        "old_hash": old_hash,
-                        "new_hash": graph.node_hash(nid),
-                        "invalidated": sorted(set(graph.invalid()) - already_invalid - {nid}),
-                    }
+                report("settled", nid, queue)
+                continue
+            checkpoint.question = str(question)
+            checkpoint.phase = "asking"
+            persist()
+
+        question = checkpoint.question
+        if question is None:
+            raise GraphError("Saved interview question is missing")
+        if checkpoint.phase == "asking":
+            report("asking", nid, queue)
+            answer = ask(question)
+            if answer is None:
+                return InterviewResult(graph, checkpoint.round_no, False, asked, paused=True)
+            asked += 1
+            checkpoint.answer = answer
+            checkpoint.phase = "revising"
+            persist()
+
+        answer = checkpoint.answer
+        if answer is None:
+            raise GraphError("Saved interview answer is missing")
+        old_hash = graph.node_hash(nid)
+        already_invalid = set(graph.invalid())
+        known = set(graph.nodes)
+        report("revising", nid, queue)
+        revision = parse_json(
+            provider.complete(
+                REVISE_PROMPT.format(
+                    goal=graph.goal,
+                    id=nid,
+                    title=node.title,
+                    content=node.content,
+                    files=node.files,
+                    depends_on=node.depends_on,
+                    question=question,
+                    answer=answer,
                 )
-                new_ids = set(graph.nodes) - known
-                report(
-                    "revised",
-                    round_no,
-                    nid,
-                    queue,
-                    added=len(new_ids),
-                    reopened=len(set(graph.invalid()) - already_invalid - {nid} - new_ids),
-                )
-            if on_change:
-                on_change(graph)
-    return InterviewResult(graph, max_rounds, graph.is_stable(), asked)
+            )
+        )
+        _apply_revision(graph, nid, revision)
+        finish(
+            AnsweredEvent(
+                id=uuid4().hex,
+                event="answered",
+                round=checkpoint.round_no,
+                node=nid,
+                question=question,
+                answer=answer,
+                old_hash=old_hash,
+                new_hash=graph.node_hash(nid),
+                invalidated=sorted(set(graph.invalid()) - already_invalid - {nid}),
+            )
+        )
+        new_ids = set(graph.nodes) - known
+        report(
+            "revised",
+            nid,
+            queue,
+            added=len(new_ids),
+            reopened=len(set(graph.invalid()) - already_invalid - {nid} - new_ids),
+        )
 
 
 def split_node(graph: Graph, provider: Provider, nid: str, max_lines: int) -> list[str]:

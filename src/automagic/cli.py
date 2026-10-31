@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import webbrowser
 from dataclasses import replace
@@ -10,11 +11,12 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from pydantic import ValidationError
 
 from automagic import guardrails, htmlview, interview, plandocs, render, runner, sizing, worktrees
 from automagic import review as review_mod
 from automagic.config import Config, load_config, state_dir
-from automagic.merkle import Graph
+from automagic.merkle import Graph, GraphError
 from automagic.progress import Reporter
 from automagic.providers import ProviderError, get_provider
 from automagic.scaffold import LANGUAGES, scaffold
@@ -121,15 +123,42 @@ def _show_proposals(graph: Graph, items: list[sizing.WorkItem], cfg: Config, roo
     typer.echo(f"Node documents: {plandocs.PLAN_DOCS.as_posix()}/ (commit these)")
 
 
-def _load_graph(root: Path) -> Graph:
+def _load_graph(root: Path, *, include_checkpoint: bool = False) -> Graph:
     graph_path = state_dir(root) / "plan" / "graph.json"
     committed = plandocs.plan_dir(root) / "graph.json"
     if not graph_path.exists() and committed.exists():
-        return Graph.load(committed)
+        return Graph.load(committed, include_checkpoint=include_checkpoint)
     if not graph_path.exists():
         typer.echo("error: no plan found; run `automagic plan` first", err=True)
         raise typer.Exit(1)
-    return Graph.load(graph_path)
+    return Graph.load(graph_path, include_checkpoint=include_checkpoint)
+
+
+def _resume_graph(root: Path) -> Graph:
+    problem: str | None = None
+    try:
+        graph = _load_graph(root, include_checkpoint=True)
+    except ValidationError as exc:
+        graph = _load_graph(root, include_checkpoint=False)
+        problem = str(exc)
+    graph.check()
+    if problem is None:
+        try:
+            graph.check_interview()
+        except (GraphError, ValidationError) as exc:
+            problem = str(exc)
+    if problem is not None:
+        typer.echo(f"Saved interview checkpoint cannot be continued: {problem}", err=True)
+        if not typer.confirm(
+            "Discard saved interview position and pending input, "
+            "keeping agreed decisions and history, and start a fresh pass?"
+        ):
+            typer.echo("Nothing saved.")
+            raise typer.Exit(2)
+        graph.interview = None
+    elif graph.interview is None and not graph.is_stable():
+        typer.echo("No saved interview position; starting a fresh pass over saved decisions.")
+    return graph
 
 
 def _propose(root: Path, create: bool, yes: bool) -> None:
@@ -163,9 +192,9 @@ def _propose(root: Path, create: bool, yes: bool) -> None:
 
 
 def _report_amendment(change: interview.AmendResult) -> None:
-    typer.echo(f"\nEdited nodes: {', '.join(change.edited) or '-'}")
-    typer.echo(f"New nodes: {', '.join(change.added) or '-'}")
-    typer.echo(f"Agreed nodes invalidated and re-examined: {', '.join(change.affected) or '-'}")
+    typer.echo(f"\nEdited planning topics: {', '.join(change.edited) or '-'}")
+    typer.echo(f"New planning topics: {', '.join(change.added) or '-'}")
+    typer.echo(f"Settled planning topics re-opened for review: {', '.join(change.affected) or '-'}")
     for c in change.conflicts:
         typer.echo(f"contradicts {c['node']}: {c['reason']}", err=True)
 
@@ -180,30 +209,53 @@ def plan(
         str | None,
         typer.Option(
             "--amend",
-            help="Describe a change to a finished plan; only the nodes it touches are re-examined.",
+            help="Describe a change to a finished plan; "
+            "only the planning topics it touches are re-examined.",
         ),
     ] = None,
     yes: Annotated[bool, typer.Option(help="Accept contradictions with agreed intent.")] = False,
 ) -> None:
-    """Interview until the Merkle assumption graph is stable, then propose worktrees."""
+    """Interview until all planning topics are settled, then propose worktrees."""
     root = path.resolve()
     cfg = load_config(root)
     graph_path = state_dir(root) / "plan" / "graph.json"
     history_path = graph_path.parent / "history.jsonl"
     provider = get_provider(cfg)
     reporter = Reporter()
+    graph: Graph | None = None
+    event_ids: set[str] | None = None
 
     def log_event(event: dict) -> None:
+        nonlocal event_ids
+        if event_ids is None:
+            event_ids = set()
+            for previous in render.load_history(history_path):
+                previous_id = previous.get("id")
+                if isinstance(previous_id, str):
+                    event_ids.add(previous_id)
+        event_id = event.get("id")
+        if isinstance(event_id, str) and event_id in event_ids:
+            return
         history_path.parent.mkdir(parents=True, exist_ok=True)
         with history_path.open("a") as fh:
             fh.write(json.dumps(event) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        if isinstance(event_id, str):
+            event_ids.add(event_id)
 
     try:
         if amend:
-            graph = _load_graph(root)
+            graph = _load_graph(root, include_checkpoint=True)
             if not graph.is_stable():
                 typer.echo("error: finish the open plan first: `automagic plan --resume`", err=True)
                 raise typer.Exit(1)
+            if graph.interview is not None and graph.interview.pending_event is not None:
+                typer.echo(
+                    "error: save the pending interview history with `plan --resume`", err=True
+                )
+                raise typer.Exit(1)
+            graph.interview = None
             with reporter.working("Applying your change to the plan..."):
                 change = interview.amend_graph(graph, provider, amend)
             _report_amendment(change)
@@ -219,11 +271,11 @@ def plan(
                 {"event": "amended", "round": 0, "node": "-", "change": amend, **vars(change)}
             )
         elif resume:
-            graph = _load_graph(root)
+            graph = _resume_graph(root)
         else:
             if not goal:
                 goal = typer.prompt("Goal")
-            with reporter.working("Drafting initial assumption graph..."):
+            with reporter.working("Drafting initial planning topics..."):
                 graph = interview.seed_graph(provider, goal, _repo_context(root))
             graph.save(graph_path)
             history_path.unlink(missing_ok=True)
@@ -239,33 +291,64 @@ def plan(
         )
         reporter.close()
         if not result.converged:
+            checkpoint = graph.interview
+            if result.paused and checkpoint is not None:
+                invalid = set(graph.invalid())
+                left = sum(nid in invalid for nid in checkpoint.pending)
+                message = (
+                    f"Plan paused during interview pass {result.rounds}/{checkpoint.round_limit}; "
+                    f"{left} {'topic' if left == 1 else 'topics'} pending this pass; "
+                )
+            else:
+                message = (
+                    f"Plan unsettled: interview pass limit reached after pass {result.rounds}; "
+                    f"resume grants {cfg.max_rounds} more interview "
+                    f"{'pass' if cfg.max_rounds == 1 else 'passes'}; "
+                )
+            unsettled = len(graph.invalid())
             typer.echo(
-                f"\nPlan not stable after {result.rounds} round(s); "
-                f"{len(graph.invalid())} node(s) still unvalidated. "
+                f"\n{message}"
+                f"{unsettled} {'topic' if unsettled == 1 else 'topics'} unsettled overall. "
                 "Continue with `automagic plan --resume`.",
                 err=True,
             )
             raise typer.Exit(2)
         for nid in sizing.oversized_nodes(graph, root, cfg):
-            with reporter.working(f"Splitting oversized node {nid}..."):
+            with reporter.working(f"Splitting oversized planning topic {nid}..."):
                 interview.split_node(graph, provider, nid, cfg.max_changed_lines)
         for nid in graph.nodes:
             graph.validate(nid)
         graph.save(graph_path)
-    except (ProviderError, ValueError) as exc:
+    except (KeyboardInterrupt, typer.Abort) as exc:
+        typer.echo(
+            "\nPlanning interrupted. Continue from the last saved state "
+            "with `automagic plan --resume`."
+            if graph is not None
+            and (graph_path.exists() or (plandocs.plan_dir(root) / "graph.json").exists())
+            else "\nPlanning interrupted before the initial graph was saved.",
+            err=True,
+        )
+        raise typer.Exit(1) from exc
+    except (ProviderError, ValueError, OSError) as exc:
         reporter.close()
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
     finally:
         reporter.close()
-    typer.echo(f"\nStable after {result.rounds} round(s), {result.questions_asked} question(s).")
+    typer.echo(
+        f"\nPlanning settled after {result.rounds} interview "
+        f"{'pass' if result.rounds == 1 else 'passes'}, "
+        f"{result.questions_asked} {'question' if result.questions_asked == 1 else 'questions'}."
+    )
     _propose(root, create=create, yes=False)
 
 
 @app.command()
 def show(
     path: PathOpt = Path(),
-    node: Annotated[str | None, typer.Option(help="Print this node's hash chain.")] = None,
+    node: Annotated[
+        str | None, typer.Option(help="Print this planning topic's hash chain.")
+    ] = None,
     open_html: Annotated[bool, typer.Option("--open", help="Open plan.html in a browser.")] = False,
 ) -> None:
     """Regenerate plan.md, plan.html and docs/plan/ (no AI calls) and print the plan."""

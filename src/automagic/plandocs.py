@@ -107,7 +107,7 @@ def write(
             if _MARK.match(first):
                 old.unlink()
     (out / "_index.md").write_text(_index(graph, items))
-    graph.save(out / "graph.json")
+    graph.save(out / "graph.json", include_checkpoint=False)
     return written
 
 
@@ -117,7 +117,7 @@ def stale(root: Path) -> list[str]:
     graph_path = out / "graph.json"
     if not graph_path.exists():
         return []
-    graph = Graph.load(graph_path)
+    graph = Graph.load(graph_path, include_checkpoint=False)
     problems: list[str] = []
     for nid in graph.nodes:
         rel = (PLAN_DOCS / f"{nid}.md").as_posix()

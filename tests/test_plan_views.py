@@ -139,7 +139,9 @@ def test_plan_amend_cli_revalidates_and_logs(tmp_path, monkeypatch):
     monkeypatch.setattr("automagic.cli.get_provider", lambda cfg: FakeProvider(reply))
     out = runner.invoke(app, ["plan", "--amend", "change a", "--path", str(repo), "--no-create"])
     assert out.exit_code == 0, out.output
-    assert "Agreed nodes invalidated and re-examined: b, c, d" in out.output
+    assert "Edited planning topics: a" in out.output
+    assert "New planning topics: -" in out.output
+    assert "Settled planning topics re-opened for review: b, c, d" in out.output
     graph = Graph.load(repo / ".automagic" / "plan" / "graph.json")
     assert graph.is_stable() and graph.nodes["a"].content == "do a differently"
     history = (repo / ".automagic" / "plan" / "history.jsonl").read_text()

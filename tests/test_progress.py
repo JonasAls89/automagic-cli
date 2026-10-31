@@ -53,17 +53,41 @@ def test_bar_is_full_only_when_everything_is_settled():
 
 def test_summary_and_delta_text():
     assert summary(sample()) == (
-        "[########------------] 4/10 settled · round 2/8 · 5 left this round"
-        " · at least 6 checks to go"
+        "Planning: [########------------] 4/10 topics settled · pass 2/8\n"
+        "5 topics pending this pass · 6 unsettled overall"
     )
-    assert summary(sample(settled=9)).endswith("at least 1 check to go")
+    assert summary(sample(settled=9)).endswith("1 unsettled overall")
     assert delta(sample()) == ""
     assert delta(sample(added=1, reopened=2)) == (
-        "answer applied: +1 new node, 2 settled nodes re-opened"
+        "answer applied: +1 new topic, 2 settled topics re-opened"
     )
     assert delta(sample(added=2, reopened=1)) == (
-        "answer applied: +2 new nodes, 1 settled node re-opened"
+        "answer applied: +2 new topics, 1 settled topic re-opened"
     )
+
+
+def test_summary_distinguishes_the_current_pass_from_all_unsettled_topics():
+    assert summary(sample(round_no=1, total=19, settled=1, left_in_round=8)) == (
+        "Planning: [#-------------------] 1/19 topics settled · pass 1/8\n"
+        "8 topics pending this pass · 18 unsettled overall"
+    )
+
+
+@pytest.mark.parametrize(
+    ("total", "settled", "pending", "expected"),
+    [
+        (
+            0,
+            0,
+            0,
+            "0/0 topics settled · pass 2/8\n0 topics pending this pass · 0 unsettled overall",
+        ),
+        (1, 0, 1, "0/1 topic settled · pass 2/8\n1 topic pending this pass · 1 unsettled overall"),
+        (1, 1, 0, "1/1 topic settled · pass 2/8\n0 topics pending this pass · 0 unsettled overall"),
+    ],
+)
+def test_summary_handles_zero_and_single_topic_counts(total, settled, pending, expected):
+    assert summary(sample(total=total, settled=settled, left_in_round=pending)).endswith(expected)
 
 
 def test_interview_reports_state_before_the_first_question():
@@ -120,7 +144,10 @@ def test_reporter_prints_summary_before_question_and_delta_only_when_changed():
     reporter.handle(sample(phase="revised"))
     reporter.handle(sample(phase="revised", added=1))
     reporter.close()
-    assert out.getvalue().splitlines() == [summary(sample()), "answer applied: +1 new node"]
+    assert out.getvalue().splitlines() == [
+        *summary(sample()).splitlines(),
+        "answer applied: +1 new topic",
+    ]
 
 
 def test_working_prints_message_off_terminal_and_cleans_up_on_error():
@@ -132,14 +159,23 @@ def test_working_prints_message_off_terminal_and_cleans_up_on_error():
     assert out.getvalue() == "Drafting...\n"
 
 
-def test_spinner_text_is_not_parsed_as_markup(monkeypatch):
+@pytest.mark.parametrize(
+    ("phase", "label"),
+    [
+        ("checking", "Reviewing topic"),
+        ("revising", "Applying your answer to topic"),
+        ("settled", "Settled topic"),
+    ],
+)
+def test_spinner_text_is_not_parsed_as_markup(monkeypatch, phase, label):
     monkeypatch.setenv("TERM", "xterm")
     out = StringIO()
     reporter = Reporter(Console(file=out, force_terminal=True, width=120))
-    reporter.handle(sample(phase="checking", node="[bold]x[/bold]"))
+    reporter.handle(sample(phase=phase, node="[bold]x[/bold]"))
     reporter.close()
     reporter.close()
     assert "[bold]x[/bold]" in out.getvalue()
+    assert label in out.getvalue()
 
 
 def stale_repo(tmp_path):
@@ -159,11 +195,11 @@ def test_plan_cli_shows_progress_and_what_the_answer_reopened(tmp_path, monkeypa
         app, ["plan", "--resume", "--path", str(repo), "--no-create"], input="my answer\n"
     )
     assert out.exit_code == 0, out.output
-    line = "3/4 settled · round 1/8 · 1 left this round · at least 1 check to go"
+    line = "3/4 topics settled · pass 1/8\n1 topic pending this pass · 1 unsettled overall"
     assert line in out.output
     assert out.output.index(line) < out.output.index("? Which approach?")
-    assert "answer applied: 3 settled nodes re-opened" in out.output
-    assert "Stable after 2 round(s), 1 question(s)." in out.output
+    assert "answer applied: 3 settled topics re-opened" in out.output
+    assert "Planning settled after 2 interview passes, 1 question." in out.output
 
 
 def test_plan_cli_stopping_early_still_reports_progress(tmp_path, monkeypatch):
@@ -174,5 +210,6 @@ def test_plan_cli_stopping_early_still_reports_progress(tmp_path, monkeypatch):
         app, ["plan", "--resume", "--path", str(repo), "--no-create"], input="/done\n"
     )
     assert out.exit_code == 2
-    assert "3/4 settled" in out.output
-    assert "Plan not stable" in out.output
+    assert "3/4 topics settled" in out.output
+    assert "Plan paused during interview pass 1/8" in out.output
+    assert "1 topic pending this pass" in out.output
