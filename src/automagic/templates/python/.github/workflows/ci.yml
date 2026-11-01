@@ -23,4 +23,5 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run bandit -c pyproject.toml -r .
+      - run: uv run zizmor .github/workflows
       - run: uv run pytest

@@ -42,7 +42,7 @@ def init(
     force: Annotated[bool, typer.Option(help="Overwrite existing files.")] = False,
     dry_run: Annotated[bool, typer.Option(help="Show what would change.")] = False,
 ) -> None:
-    """Set up pre-commit, ADRs, Copilot instructions, guardrails and slash commands."""
+    """Set up development tooling, pre-commit, ADRs, guardrails and slash commands."""
     root = path.resolve()
     language = language or _detect_language(root)
     if language is None:
@@ -57,7 +57,13 @@ def init(
         typer.echo(f"{action.status:>15}  {action.path}")
     if not dry_run:
         guardrails.update_index(root)
-        typer.echo("\nNext: prek install && automagic check")
+        next_steps = "prek install && automagic check"
+        if language == "python" and any(
+            action.path == "pyproject.toml" and action.status in ("created", "overwritten")
+            for action in actions
+        ):
+            next_steps = "uv sync && uv run prek install && automagic check"
+        typer.echo(f"\nNext: {next_steps}")
 
 
 @app.command()

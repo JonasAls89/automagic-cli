@@ -25,6 +25,12 @@ repos:
       - id: zizmor
   - repo: local
     hooks:
+      - id: uv-lock
+        name: uv lockfile is up to date
+        entry: uv lock --check
+        language: system
+        pass_filenames: false
+        files: '^(pyproject\.toml|uv\.lock)$'
       - id: automagic-check
         name: automagic guardrails
         entry: automagic check

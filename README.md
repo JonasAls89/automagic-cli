@@ -12,7 +12,7 @@ uv tool install .        # or: uv run automagic ...
 
 | Command | Slash command | What it does |
 |---|---|---|
-| `automagic init [--language python\|typescript] [--dry-run] [--force]` | `/automagic-init` | Scaffolds pre-commit, `docs/adr`, `AGENTS.md`, Copilot instructions, guardrails, CI and slash commands. Never overwrites without `--force`. |
+| `automagic init [--language python\|typescript] [--dry-run] [--force]` | `/automagic-init` | Scaffolds development-tool configs, pre-commit, `docs/adr`, `AGENTS.md`, Copilot instructions, guardrails, CI and slash commands. Never overwrites without `--force`. |
 | `automagic check` | `/automagic-check` | Enforces context-size limits and grounding (relative links resolve, docs are indexed). Runs as a pre-commit hook. |
 | `automagic context` | | Regenerates the `docs/CONTEXT.md` index. |
 | `automagic plan "<goal>" [--resume]` | `/automagic-plan` | Interviews you until the Merkle assumption graph is stable, then proposes worktrees. |
@@ -23,6 +23,24 @@ uv tool install .        # or: uv run automagic ...
 
 Python projects get uv, ruff, bandit and zizmor in the pre-commit config; TypeScript projects get eslint, prettier and zizmor. Hooks are run with [prek](https://github.com/j178/prek) (`prek install`, `prek run --all-files`), which reads `.pre-commit-config.yaml`.
 Slash commands are provided as skills in `.github/skills/*/SKILL.md` ([slashcmds.py](src/automagic/slashcmds.py)).
+
+### Python initialization
+
+The generated [pyproject.toml](src/automagic/templates/python/pyproject.toml.j2) keeps runtime dependencies empty and puts pytest, pytest-cov, Ruff, Bandit, prek and zizmor in the development dependency group. Ruff, Bandit and zizmor versions match the pinned [pre-commit hooks](src/automagic/templates/python/.pre-commit-config.yaml).
+
+Pytest looks for tests in `tests/`, imports from `src/`, and measures coverage of the normalized project package name, with a 90% minimum ([Python template](src/automagic/templates/python/pyproject.toml.j2), [name normalization](src/automagic/scaffold.py)). Add your application package under `src/<package_name>/` and tests under `tests/`; init does not generate application code or choose a build backend.
+
+When it creates the Python manifest, [init](src/automagic/cli.py) prints the setup commands but does not install dependencies or Git hooks:
+
+```sh
+uv sync
+uv run prek install
+automagic check
+```
+
+Run `uv run pytest` once you have tests. Commit the generated `uv.lock`: the [lockfile hook](src/automagic/templates/python/.pre-commit-config.yaml) rejects a missing or stale lockfile without changing it, and [CI](src/automagic/templates/python/.github/workflows/ci.yml) uses `uv sync --locked`, runs the development checks and scans workflows with zizmor.
+
+Existing manifests and hook configurations are still skipped unless you explicitly use `--force` ([scaffold.py](src/automagic/scaffold.py)). See [ADR 0008](docs/adr/0008-python-development-baseline.md) for the baseline's boundaries.
 
 ## How planning works
 
