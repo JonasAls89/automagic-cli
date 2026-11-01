@@ -7,7 +7,22 @@ requires-python = ">=3.12"
 dependencies = []
 
 [dependency-groups]
-dev = ["pytest", "ruff", "bandit[toml]", "prek"]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff==0.17.2",
+    "bandit[toml]==1.9.4",
+    "prek",
+    "zizmor==1.31.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = ["--cov={{ package_name }}", "--cov-report=term-missing"]
+
+[tool.coverage.report]
+fail_under = 90
 
 [tool.ruff]
 line-length = 100

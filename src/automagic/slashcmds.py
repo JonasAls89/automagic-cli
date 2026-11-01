@@ -1,4 +1,4 @@
-"""Slash-command definitions rendered as Copilot prompt files and skills."""
+"""Slash-command definitions rendered as Copilot skills."""
 
 from __future__ import annotations
 
@@ -75,9 +75,6 @@ def slash_files() -> dict[str, str]:
     files: dict[str, str] = {}
     for name, (description, body) in COMMANDS.items():
         full = f"automagic-{name}"
-        files[f".github/prompts/{full}.prompt.md"] = (
-            f"---\ndescription: {description}\nagent: agent\n---\n\n{body}\n"
-        )
         files[f".github/skills/{full}/SKILL.md"] = (
             f"---\nname: {full}\ndescription: {description}\n---\n\n{body}\n"
         )

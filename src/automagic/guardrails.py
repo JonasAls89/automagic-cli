@@ -20,7 +20,6 @@ def context_files(root: Path) -> list[Path]:
         "AGENTS.md",
         ".github/copilot-instructions.md",
         ".github/instructions/*.md",
-        ".github/prompts/*.md",
         ".github/skills/*/SKILL.md",
         "docs/*.md",
         "docs/plan/*.md",

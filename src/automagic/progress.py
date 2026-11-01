@@ -29,6 +29,7 @@ class Progress:
     settled: int
     left_in_round: int
     node: str
+    node_title: str
     added: int = 0
     reopened: int = 0
 
@@ -80,20 +81,21 @@ class Reporter:
         if p.phase == "asking":
             self._stop()
             self._print(summary(p))
+            self._print(f'Topic: "{p.node_title}"')
         elif p.phase == "revised":
             self._stop()
             if line := delta(p):
                 self._print(line)
         elif p.phase == "revising":
-            self._spin(f"Applying your answer to topic {p.node}...")
+            self._spin(f'Applying your answer to topic "{p.node_title}"...')
         elif p.phase == "checking":
             self._spin(
-                f"Reviewing topic {p.node}  {bar(p.settled, p.total)} "
+                f'Reviewing topic "{p.node_title}"  {bar(p.settled, p.total)} '
                 f"{p.settled}/{_plural(p.total, 'topic')} settled"
             )
         else:
             self._spin(
-                f"Settled topic {p.node}  {bar(p.settled, p.total)} "
+                f'Settled topic "{p.node_title}"  {bar(p.settled, p.total)} '
                 f"{p.settled}/{_plural(p.total, 'topic')} settled"
             )
 
@@ -118,7 +120,7 @@ class Reporter:
     def _spin(self, message: str) -> None:
         if not self._console.is_terminal:
             return
-        # Text is not parsed as markup, so node ids and the bar's brackets print literally.
+        # Text is not parsed as markup, so topic titles and the bar's brackets print literally.
         if self._status is None:
             self._status = self._console.status(Text(message))
             self._status.start()

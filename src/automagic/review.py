@@ -22,7 +22,6 @@ GUARDED = (
     ".github/workflows/*",
     ".github/copilot-instructions.md",
     ".github/instructions/*",
-    ".github/prompts/*",
     ".github/skills/*",
     ".pre-commit-config.yaml",
     "AGENTS.md",

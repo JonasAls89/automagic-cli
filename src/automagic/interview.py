@@ -42,6 +42,9 @@ Repository context:
 QUESTION_PROMPT = """You are a rigorous interviewer. Decide whether the node below is fully
 specified and grounded given its dependencies. If anything is ambiguous, unstated or risky,
 ask ONE concrete question for the user. Otherwise reply with a null question.
+Whenever you refer to a planning topic, use its exact title in double quotes.
+Do not refer to a topic only by its ID or a description such as "the scope node".
+Use the topic names below; do not invent titles.
 Reply with JSON only: {{"question": string or null}}
 
 Goal: {goal}
@@ -49,6 +52,8 @@ Node {id}: {title}
 {content}
 Dependencies:
 {deps}
+Topic names (IDs are internal; questions use titles):
+{topics}
 """
 
 REVISE_PROMPT = """Revise the node using the user's answer. Keep it concise. If the answer
@@ -134,7 +139,21 @@ def seed_graph(provider: Provider, goal: str, context: str) -> Graph:
 
 
 def _deps_text(graph: Graph, node: Node) -> str:
-    return "\n".join(f"- {d}: {graph.nodes[d].content}" for d in node.depends_on) or "(none)"
+    return (
+        "\n".join(
+            f"- {d}: {json.dumps(graph.nodes[d].title, ensure_ascii=False)}: "
+            f"{graph.nodes[d].content}"
+            for d in node.depends_on
+        )
+        or "(none)"
+    )
+
+
+def _topic_names(graph: Graph) -> str:
+    return "\n".join(
+        f"- {nid}: {json.dumps(node.title, ensure_ascii=False)}"
+        for nid, node in sorted(graph.nodes.items())
+    )
 
 
 def _apply_revision(graph: Graph, nid: str, data: dict) -> None:
@@ -206,10 +225,20 @@ def run_interview(
         persist()
         flush_event()
 
-    def report(phase: Phase, nid: str, queue: list[str], added: int = 0, reopened: int = 0) -> None:
+    def report(
+        phase: Phase,
+        nid: str,
+        queue: list[str],
+        node: Node,
+        added: int = 0,
+        reopened: int = 0,
+        *,
+        invalid: set[str] | None = None,
+    ) -> None:
         if on_progress is None:
             return
-        invalid = set(graph.invalid())
+        if invalid is None:
+            invalid = set(graph.invalid())
         total = len(graph.nodes)
         on_progress(
             Progress(
@@ -220,6 +249,7 @@ def run_interview(
                 settled=total - len(invalid),
                 left_in_round=sum(1 for n in queue if n in invalid),
                 node=nid,
+                node_title=graph.nodes.get(nid, node).title,
                 added=added,
                 reopened=reopened,
             )
@@ -248,13 +278,14 @@ def run_interview(
 
         queue = checkpoint.pending.copy()
         nid = queue[0]
-        if nid not in graph.invalid():
+        invalid = set(graph.invalid())
+        if nid not in invalid:
             checkpoint.pending.pop(0)
             persist()
             continue
         node = graph.nodes[nid]
         if checkpoint.phase == "checking":
-            report("checking", nid, queue)
+            report("checking", nid, queue, node, invalid=invalid)
             reply = parse_json(
                 provider.complete(
                     QUESTION_PROMPT.format(
@@ -263,6 +294,7 @@ def run_interview(
                         title=node.title,
                         content=node.content,
                         deps=_deps_text(graph, node),
+                        topics=_topic_names(graph),
                     )
                 )
             )
@@ -278,7 +310,7 @@ def run_interview(
                         hash=graph.node_hash(nid),
                     )
                 )
-                report("settled", nid, queue)
+                report("settled", nid, queue, node)
                 continue
             checkpoint.question = str(question)
             checkpoint.phase = "asking"
@@ -288,7 +320,7 @@ def run_interview(
         if question is None:
             raise GraphError("Saved interview question is missing")
         if checkpoint.phase == "asking":
-            report("asking", nid, queue)
+            report("asking", nid, queue, node)
             answer = ask(question)
             if answer is None:
                 return InterviewResult(graph, checkpoint.round_no, False, asked, paused=True)
@@ -303,7 +335,7 @@ def run_interview(
         old_hash = graph.node_hash(nid)
         already_invalid = set(graph.invalid())
         known = set(graph.nodes)
-        report("revising", nid, queue)
+        report("revising", nid, queue, node, invalid=already_invalid)
         revision = parse_json(
             provider.complete(
                 REVISE_PROMPT.format(
@@ -333,12 +365,15 @@ def run_interview(
             )
         )
         new_ids = set(graph.nodes) - known
+        invalid = set(graph.invalid())
         report(
             "revised",
             nid,
             queue,
+            node,
             added=len(new_ids),
-            reopened=len(set(graph.invalid()) - already_invalid - {nid} - new_ids),
+            reopened=len(invalid - already_invalid - {nid} - new_ids),
+            invalid=invalid,
         )
 
 
