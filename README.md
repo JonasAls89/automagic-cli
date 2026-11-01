@@ -22,6 +22,7 @@ uv tool install .        # or: uv run automagic ...
 | `automagic worktrees [--create] [--yes]` | `/automagic-worktrees` | Shows or creates worktrees for the saved plan, each with a `.automagic/BRIEF.md`. |
 
 Python projects get uv, ruff, bandit and zizmor in the pre-commit config; TypeScript projects get eslint, prettier and zizmor. Hooks are run with [prek](https://github.com/j178/prek) (`prek install`, `prek run --all-files`), which reads `.pre-commit-config.yaml`.
+
 Slash commands are provided as skills in `.github/skills/*/SKILL.md` ([slashcmds.py](src/automagic/slashcmds.py)).
 
 ### Python initialization
