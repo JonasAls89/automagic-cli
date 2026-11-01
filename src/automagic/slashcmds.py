@@ -15,13 +15,13 @@ COMMANDS: dict[str, tuple[str, str]] = {
         'Ask the user for the goal if it is not provided. Run `automagic plan "<goal>"` in an '
         "interactive terminal and relay each question to the user verbatim, passing their "
         "answers through. The command builds a Merkle graph of assumptions and keeps asking "
-        "until no node hash is invalidated. Afterwards show `.automagic/plan/plan.md` and ask "
-        "before creating worktrees with `automagic worktrees --create`. To change a finished "
-        'plan, run `automagic plan --amend "<change>"`: it lists the agreed nodes the change '
-        "invalidates and asks before accepting contradictions with agreed intent. Before "
-        "implementing new work in a repository that has `docs/plan/`, read the node documents "
-        "there and say which nodes the work touches; if it contradicts one, propose an amend "
-        "instead of proceeding.",
+        "until no node hash is invalidated. Afterwards run `automagic show`, present its terminal "
+        "output and ask before creating worktrees with `automagic worktrees --create`. To change a "
+        'finished plan, run `automagic plan --amend "<change>"`: it lists the agreed nodes '
+        "the change invalidates and asks before accepting contradictions with agreed intent. "
+        "Before implementing new work in a repository that has `docs/plan/`, read the node "
+        "documents there and say which nodes the work touches; if it contradicts one, propose "
+        "an amend instead of proceeding.",
     ),
     "worktrees": (
         "Propose or create git worktrees for the current plan",
@@ -30,8 +30,8 @@ COMMANDS: dict[str, tuple[str, str]] = {
     ),
     "show": (
         "Show the plan, Merkle graph (Mermaid) and interview history",
-        "Run `automagic show` and present `.automagic/plan/plan.md`, including the Mermaid "
-        "graph. Use `automagic show --node <id>` to explain a node's hash chain. "
+        "Run `automagic show` and present its terminal output, including the Mermaid graph. Use "
+        "`automagic show --node <id>` to explain a node's hash chain. "
         "`automagic show --open` opens `.automagic/plan/plan.html`, where work items are "
         "ticked and prerequisites are selected automatically.",
     ),
