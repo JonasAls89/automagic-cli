@@ -11,7 +11,16 @@ from typing import Annotated
 import typer
 from pydantic import ValidationError
 
-from automagic import guardrails, htmlview, interview, plandocs, render, runner, sizing, worktrees
+from automagic import (
+    guardrails,
+    interview,
+    plandocs,
+    publication,
+    render,
+    runner,
+    sizing,
+    worktrees,
+)
 from automagic import review as review_mod
 from automagic.config import Config, load_config, state_dir
 from automagic.durability import InterviewDurability
@@ -105,17 +114,7 @@ def _ask(question: str) -> str | None:
 
 
 def _show_proposals(graph: Graph, items: list[sizing.WorkItem], cfg: Config, root: Path) -> str:
-    plan_dir = state_dir(root) / "plan"
-    plan_dir.mkdir(parents=True, exist_ok=True)
-    history = render.load_history(plan_dir / "history.jsonl")
-    markdown = render.render_plan(graph, items, cfg, history)
-    state_path = plan_dir / "run.json"
-    state = runner.RunState.load(state_path) if state_path.exists() else None
-    html_path = plan_dir / "plan.html"
-    html_path.write_text(htmlview.render_html(graph, items, state))
-    plandocs.write(root, graph, items, history, cfg.max_changed_lines)
-    if (root / "docs" / "CONTEXT.md").exists():
-        guardrails.update_index(root)
+    published = publication.publish(root, graph, items, cfg)
     typer.echo(f"\nRoot hash {graph.root_hash()[:12]}; {len(items)} work item(s):")
     for item in items:
         flag = "  OVERSIZED" if item.oversized else ""
@@ -123,9 +122,11 @@ def _show_proposals(graph: Graph, items: list[sizing.WorkItem], cfg: Config, roo
             f"  {item.id}: {', '.join(item.node_ids)} "
             f"(~{item.tokens} tokens, ~{item.lines} lines){flag}"
         )
-    typer.echo(f"Graph view: {html_path.relative_to(root)}")
-    typer.echo(f"Node documents: {plandocs.PLAN_DOCS.as_posix()}/ (commit these)")
-    return markdown
+    typer.echo(f"Graph view: {published.html_path.relative_to(root)}")
+    typer.echo(
+        f"Node documents: {published.documents_dir.relative_to(root).as_posix()}/ (commit these)"
+    )
+    return published.markdown
 
 
 def _load_graph(root: Path, *, include_checkpoint: bool = False) -> Graph:

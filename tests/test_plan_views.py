@@ -10,8 +10,9 @@ from automagic.cli import app
 from automagic.config import Config
 from automagic.htmlview import render_html, view_data
 from automagic.interview import amend_graph
-from automagic.merkle import Graph, Node
+from automagic.merkle import Graph, InterviewCheckpoint, Node
 from automagic.providers import FakeProvider
+from automagic.publication import publish
 from automagic.render import render_history
 from automagic.runner import ItemRun, RunError, RunState, select
 from automagic.sizing import WorkItem, partition
@@ -68,6 +69,129 @@ def test_show_writes_node_docs_html_and_detects_stale_docs(tmp_path):
     assert guardrails.check(repo, Config()) == []
     (docs / "b.md").write_text(f"<!-- automagic:node b {'0' * 64} -->\n" + doc.split("\n", 1)[1])
     assert any("b.md" in p for p in plandocs.stale(repo))
+
+
+def test_plan_publication_returns_readable_artifacts_without_terminal_output(tmp_path, capsys):
+    graph = Graph(goal="Choose storage")
+    graph.add(Node(id="storage", title="Storage", content="Use local files"))
+    cfg = Config()
+    items = partition(graph, tmp_path, cfg)
+
+    published = publish(tmp_path, graph, items, cfg)
+
+    assert "# Plan: Choose storage" in published.markdown
+    assert "Use local files" in published.markdown and "## Merkle graph" in published.markdown
+    html = published.html_path.read_text()
+    assert "Work breakdown:" in html and "Storage" in html
+    document = (published.documents_dir / "storage.md").read_text()
+    assert "## Agreed scope" in document and "Use local files" in document
+    assert (published.documents_dir / "_index.md").exists()
+    assert Graph.load(published.documents_dir / "graph.json").nodes == graph.nodes
+    assert not (published.html_path.parent / "plan.md").exists()
+    assert capsys.readouterr().out == ""
+
+
+def test_plan_publication_uses_saved_history_and_status_without_changing_runtime_state(tmp_path):
+    graph = Graph(goal="Choose storage")
+    graph.add(Node(id="storage", title="Storage", content="Use local files"))
+    graph.interview = InterviewCheckpoint(
+        round_limit=8,
+        pending=["storage"],
+        phase="asking",
+        question="Where should files go?",
+        graph_hash=graph.interview_hash(),
+    )
+    cfg = Config()
+    items = partition(graph, tmp_path, cfg)
+    plan_dir = tmp_path / ".automagic" / "plan"
+    graph_path = plan_dir / "graph.json"
+    graph.save(graph_path)
+    history_path = plan_dir / "history.jsonl"
+    history_path.write_text(
+        json.dumps(
+            {
+                "event": "answered",
+                "round": 1,
+                "node": "storage",
+                "question": "Where should files go?",
+                "answer": "Local only",
+                "old_hash": "old",
+                "new_hash": graph.node_hash("storage"),
+                "invalidated": [],
+            }
+        )
+        + "\n\n"
+    )
+    state_path = plan_dir / "run.json"
+    RunState(
+        root_hash=graph.root_hash(),
+        items={items[0].id: ItemRun(status="done", detail="Storage already implemented")},
+    ).save(state_path)
+    overview = plan_dir / "plan.md"
+    overview.write_text("Legacy overview with manual edits\n")
+    originals = {
+        path: path.read_bytes() for path in (graph_path, history_path, state_path, overview)
+    }
+    context = tmp_path / "docs" / "CONTEXT.md"
+    context.parent.mkdir()
+    context.write_text(
+        "# Context\n\n<!-- automagic:context:start -->\n<!-- automagic:context:end -->\n"
+    )
+
+    published = publish(tmp_path, graph, items, cfg)
+
+    assert "Local only" in published.markdown
+    assert "Local only" in (published.documents_dir / "storage.md").read_text()
+    assert "Storage already implemented" in published.html_path.read_text()
+    assert "interview" not in json.loads((published.documents_dir / "graph.json").read_text())
+    assert graph.interview is not None and graph.interview.question == "Where should files go?"
+    assert "[Plan documents](plan/_index.md)" in context.read_text()
+    assert all(path.read_bytes() == contents for path, contents in originals.items())
+
+
+@pytest.mark.parametrize("failure", ["topic-document", "context-index"])
+def test_plan_publication_propagates_write_failures_without_retry_or_runtime_changes(
+    tmp_path, monkeypatch, failure
+):
+    graph = Graph(goal="Choose storage")
+    graph.add(Node(id="storage", title="Storage", content="Use local files"))
+    cfg = Config()
+    items = partition(graph, tmp_path, cfg)
+    graph_path = tmp_path / ".automagic" / "plan" / "graph.json"
+    graph.save(graph_path)
+    history_path = graph_path.with_name("history.jsonl")
+    history_path.write_text("\n")
+    state_path = graph_path.with_name("run.json")
+    RunState(root_hash=graph.root_hash()).save(state_path)
+    overview = graph_path.with_name("plan.md")
+    overview.write_text("Legacy overview with manual edits\n")
+    context = tmp_path / "docs" / "CONTEXT.md"
+    context.parent.mkdir()
+    context.write_text(
+        "# Context\n\n<!-- automagic:context:start -->\n<!-- automagic:context:end -->\n"
+    )
+    originals = {
+        path: path.read_bytes()
+        for path in (graph_path, history_path, state_path, overview, context)
+    }
+    target = tmp_path / "docs" / "plan" / "storage.md" if failure == "topic-document" else context
+    real_write = Path.write_text
+    attempts = 0
+
+    def write(path, *args, **kwargs):
+        nonlocal attempts
+        if path == target:
+            attempts += 1
+            raise OSError("publication unavailable")
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", write)
+    with pytest.raises(OSError, match="publication unavailable"):
+        publish(tmp_path, graph, items, cfg)
+
+    assert attempts == 1
+    assert graph_path.with_name("plan.html").exists()
+    assert all(path.read_bytes() == contents for path, contents in originals.items())
 
 
 def test_graph_loads_from_committed_docs_when_state_is_missing(tmp_path):

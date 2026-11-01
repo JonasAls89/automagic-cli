@@ -14,5 +14,5 @@ See [interview durability](src/automagic/durability.py) and
 **Plan publication**:
 The derived representation of agreed planning topics and their work-item
 breakdown for readers.
-See [plan documents](src/automagic/plandocs.py) and
+See [plan publication](src/automagic/publication.py) and
 [plan presentation](src/automagic/cli.py).
