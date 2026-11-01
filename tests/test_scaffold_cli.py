@@ -7,6 +7,7 @@ from automagic import guardrails
 from automagic.cli import app
 from automagic.config import Config
 from automagic.scaffold import scaffold
+from automagic.slashcmds import COMMANDS, slash_files
 
 runner = CliRunner()
 
@@ -20,13 +21,29 @@ def test_init_creates_baseline_and_passes_own_check(tmp_path, language):
         "AGENTS.md",
         ".github/copilot-instructions.md",
         "docs/adr/0001-record-architecture-decisions.md",
-        ".github/prompts/automagic-plan.prompt.md",
         ".github/skills/automagic-plan/SKILL.md",
         ".github/workflows/ci.yml",
     ):
         assert (tmp_path / rel).exists(), rel
+    assert not (tmp_path / ".github/prompts").exists()
+    assert ".github/prompts/" not in result.output
     assert guardrails.check(tmp_path, Config()) == []
     assert runner.invoke(app, ["check", "--path", str(tmp_path)]).exit_code == 0
+
+
+def test_slash_commands_only_generate_skills():
+    assert set(slash_files()) == {f".github/skills/automagic-{name}/SKILL.md" for name in COMMANDS}
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_scaffold_leaves_existing_prompts_untouched(tmp_path, force):
+    path = tmp_path / ".github/prompts/automagic-plan.prompt.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("mine")
+    actions = scaffold(tmp_path, "python", "demo", Config(), force=force)
+    assert path.read_text() == "mine"
+    assert list(path.parent.iterdir()) == [path]
+    assert all(not a.path.startswith(".github/prompts/") for a in actions)
 
 
 def test_python_precommit_has_required_hooks(tmp_path):
@@ -48,10 +65,28 @@ def test_scaffold_is_idempotent_and_never_overwrites(tmp_path):
     assert {a.status for a in forced} == {"overwritten"}
 
 
-def test_dry_run_writes_nothing(tmp_path):
-    actions = scaffold(tmp_path, "python", "demo", Config(), dry_run=True)
+@pytest.mark.parametrize("language", ["python", "typescript"])
+def test_dry_run_writes_nothing(tmp_path, language):
+    actions = scaffold(tmp_path, language, "demo", Config(), dry_run=True)
     assert actions and all(a.status == "would-create" for a in actions)
+    assert all(not a.path.startswith(".github/prompts/") for a in actions)
     assert not any(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    ("rel", "checked"),
+    [
+        (".github/prompts/custom.prompt.md", False),
+        (".github/skills/custom/SKILL.md", True),
+    ],
+)
+def test_only_skills_are_checked_as_slash_command_context(tmp_path, rel, checked):
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True)
+    path.write_text("[missing](missing.md)\n" + "z" * 9000)
+    problems = "\n".join(guardrails.check(tmp_path, Config()))
+    assert ("exceeds limit" in problems) is checked
+    assert ("broken link missing.md" in problems) is checked
 
 
 def test_check_detects_size_broken_links_and_unindexed(tmp_path):

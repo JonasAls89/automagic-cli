@@ -87,7 +87,7 @@ def test_out_of_scope_file_is_a_warning_and_guarded_file_is_an_error(tmp_path):
 
 @pytest.mark.parametrize(
     "name",
-    ["AGENTS.md", "pyproject.toml", "docs/GUARDRAILS.md", ".github/prompts/x.prompt.md"],
+    ["AGENTS.md", "pyproject.toml", "docs/GUARDRAILS.md", ".github/skills/x/SKILL.md"],
 )
 def test_guarded_files_fail_even_when_nodes_declare_no_files(tmp_path, name):
     repo = make_repo(tmp_path, [Node(id="a", title="A", content="x", est_lines=10)])
@@ -98,9 +98,10 @@ def test_guarded_files_fail_even_when_nodes_declare_no_files(tmp_path, name):
     assert "Guardrail/CI/config file changed" in out.output and name in out.output
 
 
-def test_ordinary_files_pass_when_nodes_declare_no_files(tmp_path):
+@pytest.mark.parametrize("name", ["wi-01.txt", ".github/prompts/x.prompt.md"])
+def test_ordinary_files_pass_when_nodes_declare_no_files(tmp_path, name):
     repo = make_repo(tmp_path, [Node(id="a", title="A", content="x", est_lines=10)])
-    configure(repo, WRITE)
+    configure(repo, f"sh -c 'mkdir -p $(dirname {name}) && echo \"$PWD\" > {name}' {{prompt}}")
     run_all(repo)
     out = review(repo, "wi-01")
     assert out.exit_code == 0 and "Verdict: **pass**" in out.output

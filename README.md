@@ -22,7 +22,7 @@ uv tool install .        # or: uv run automagic ...
 | `automagic worktrees [--create] [--yes]` | `/automagic-worktrees` | Shows or creates worktrees for the saved plan, each with a `.automagic/BRIEF.md`. |
 
 Python projects get uv, ruff, bandit and zizmor in the pre-commit config; TypeScript projects get eslint, prettier and zizmor. Hooks are run with [prek](https://github.com/j178/prek) (`prek install`, `prek run --all-files`), which reads `.pre-commit-config.yaml`.
-Slash commands are written as `.github/prompts/*.prompt.md` (VS Code) and `.github/skills/*/SKILL.md` (Copilot CLI).
+Slash commands are provided as skills in `.github/skills/*/SKILL.md` ([slashcmds.py](src/automagic/slashcmds.py)).
 
 ## How planning works
 
@@ -83,7 +83,7 @@ The default runner denies `git push` and `git merge` via `--deny-tool`, which is
 
 `automagic review wi-02` (a work item id, a planning topic id, or a branch; with no target it uses the current branch, so run it as `automagic review --path <project>` from inside a worktree) diffs the agent's own commits: the base is the commit recorded when `automagic run` prepared the worktree, so merged-in prerequisites are not counted. Findings:
 
-- **scope**: changed files not declared by the item's planning topics are warnings; changes to guardrail, CI or config files outside the declared files are errors (`GUARDED` in [review.py](src/automagic/review.py): `AGENTS.md`, `docs/GUARDRAILS.md`, `.github/workflows|prompts|skills|instructions/*`, `.pre-commit-config.yaml`, `pyproject.toml`, `eslint.config.js`, `.automagic/*`); so is a committed brief. Topics that declare no files skip the warning but not the error, so list such a file in a planning topic to be allowed to change it.
+- **scope**: changed files not declared by the item's planning topics are warnings; changes to guardrail, CI or config files outside the declared files are errors (`GUARDED` in [review.py](src/automagic/review.py): `AGENTS.md`, `docs/GUARDRAILS.md`, `.github/workflows|skills|instructions/*`, `.pre-commit-config.yaml`, `pyproject.toml`, `eslint.config.js`, `.automagic/*`); so is a committed brief. Topics that declare no files skip the warning but not the error, so list such a file in a planning topic to be allowed to change it.
 - **size**: more changed lines than `max_changed_lines` is an error; far above the topic estimates is a warning.
 - **guardrails**: `automagic check` problems in changed files are errors.
 - **verify** (`--verify`) and **ai** (`--ai`, via the provider, truncated to half the context budget).
