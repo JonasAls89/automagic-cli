@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from uuid import uuid4
 
+from automagic.durability import InterviewDurability
 from automagic.merkle import (
     AnsweredEvent,
     Graph,
@@ -184,15 +185,22 @@ def run_interview(
     on_change: Notify | None = None,
     on_event: Event | None = None,
     on_progress: OnProgress | None = None,
+    *,
+    durability: InterviewDurability | None = None,
 ) -> InterviewResult:
     """Continue the saved pass; only a question-free check validates a node."""
     if max_rounds <= 0:
         raise ValueError("max_rounds must be positive")
+    if durability is not None and (on_change is not None or on_event is not None):
+        raise ValueError("Use durability or persistence callbacks, not both")
     graph.check()
     graph.check_interview()
     asked = 0
 
     def persist() -> None:
+        if durability is not None:
+            durability.save(graph)
+            return
         if graph.interview is not None:
             graph.interview.graph_hash = graph.interview_hash()
         if on_change:
@@ -209,6 +217,9 @@ def run_interview(
         persist()
 
     def flush_event() -> None:
+        if durability is not None:
+            durability.flush_event(graph)
+            return
         if checkpoint.pending_event is not None:
             if on_event:
                 on_event(checkpoint.pending_event)

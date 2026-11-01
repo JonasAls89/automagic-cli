@@ -2,6 +2,8 @@
 
 Index of context documents. Regenerate with `automagic context`.
 
+Domain language: [Glossary](../GLOSSARY.md).
+
 <!-- automagic:context:start -->
 - [Guardrails](GUARDRAILS.md)
 - [Architecture decision records](adr/0000-template.md)

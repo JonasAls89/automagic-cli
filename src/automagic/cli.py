@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
 import shlex
 import webbrowser
 from dataclasses import replace
@@ -16,6 +14,7 @@ from pydantic import ValidationError
 from automagic import guardrails, htmlview, interview, plandocs, render, runner, sizing, worktrees
 from automagic import review as review_mod
 from automagic.config import Config, load_config, state_dir
+from automagic.durability import InterviewDurability
 from automagic.merkle import Graph, GraphError
 from automagic.progress import Reporter
 from automagic.providers import ProviderError, get_provider
@@ -226,29 +225,10 @@ def plan(
     cfg = load_config(root)
     graph_path = state_dir(root) / "plan" / "graph.json"
     history_path = graph_path.parent / "history.jsonl"
+    durability = InterviewDurability(graph_path)
     provider = get_provider(cfg)
     reporter = Reporter()
     graph: Graph | None = None
-    event_ids: set[str] | None = None
-
-    def log_event(event: dict) -> None:
-        nonlocal event_ids
-        if event_ids is None:
-            event_ids = set()
-            for previous in render.load_history(history_path):
-                previous_id = previous.get("id")
-                if isinstance(previous_id, str):
-                    event_ids.add(previous_id)
-        event_id = event.get("id")
-        if isinstance(event_id, str) and event_id in event_ids:
-            return
-        history_path.parent.mkdir(parents=True, exist_ok=True)
-        with history_path.open("a") as fh:
-            fh.write(json.dumps(event) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        if isinstance(event_id, str):
-            event_ids.add(event_id)
 
     try:
         if amend:
@@ -272,8 +252,8 @@ def plan(
             ):
                 typer.echo("Nothing saved.")
                 raise typer.Exit(0)
-            graph.save(graph_path)
-            log_event(
+            durability.save(graph)
+            durability.append(
                 {"event": "amended", "round": 0, "node": "-", "change": amend, **vars(change)}
             )
         elif resume:
@@ -283,7 +263,7 @@ def plan(
                 goal = typer.prompt("Goal")
             with reporter.working("Drafting initial planning topics..."):
                 graph = interview.seed_graph(provider, goal, _repo_context(root))
-            graph.save(graph_path)
+            durability.save(graph)
             history_path.unlink(missing_ok=True)
 
         result = interview.run_interview(
@@ -291,9 +271,8 @@ def plan(
             provider,
             _ask,
             cfg.max_rounds,
-            lambda g: g.save(graph_path),
-            log_event,
-            reporter.handle,
+            on_progress=reporter.handle,
+            durability=durability,
         )
         reporter.close()
         if not result.converged:
@@ -324,7 +303,7 @@ def plan(
                 interview.split_node(graph, provider, nid, cfg.max_changed_lines)
         for nid in graph.nodes:
             graph.validate(nid)
-        graph.save(graph_path)
+        durability.save(graph)
     except (KeyboardInterrupt, typer.Abort) as exc:
         typer.echo(
             "\nPlanning interrupted. Continue from the last saved state "
