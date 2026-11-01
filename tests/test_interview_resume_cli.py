@@ -49,6 +49,8 @@ def test_cli_resumes_same_question_and_ten_pending_topics_without_a_provider_cal
     assert result.exit_code == 2, result.output
     assert "0/17 topics settled" in result.output
     assert "pass 1/8" in result.output and "10 topics pending this pass" in result.output
+    assert 'Topic: "Node 7"' in result.output
+    assert result.output.index('Topic: "Node 7"') < result.output.index("? Question for node-07?")
     assert "? Question for node-07?" in result.output
     assert "Plan paused during interview pass" in result.output and provider.prompts == []
 

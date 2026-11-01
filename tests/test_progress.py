@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 
 from automagic.cli import app
 from automagic.interview import run_interview
-from automagic.merkle import Graph, Node
+from automagic.merkle import Graph, InterviewEvent, Node
 from automagic.progress import Progress, Reporter, bar, delta, summary
 from automagic.providers import FakeProvider
 
@@ -25,6 +25,7 @@ def sample(**kwargs) -> Progress:
         "settled": 4,
         "left_in_round": 5,
         "node": "db",
+        "node_title": "DB",
     }
     return Progress(**{**fields, **kwargs})
 
@@ -102,6 +103,7 @@ def test_interview_reports_state_before_the_first_question():
     first = events[1]
     assert (first.round_no, first.total, first.settled, first.left_in_round) == (1, 2, 0, 2)
     assert first.max_rounds == 5 and first.to_go == 2
+    assert first.node_title == "DB"
     assert events[-1].phase == "settled"
     assert events[-1].settled == events[-1].total
 
@@ -110,6 +112,7 @@ def test_answer_that_adds_a_node_grows_the_total():
     graph = Graph(goal="goal")
     graph.add(Node(id="db", title="DB", content="pick db"))
     revision = {
+        "title": "Storage",
         "content": "db revised",
         "new_nodes": [{"id": "migrations", "title": "Migrations", "content": "m"}],
         "depends_on": ["migrations"],
@@ -119,6 +122,101 @@ def test_answer_that_adds_a_node_grows_the_total():
     run_interview(graph, provider, lambda q: "a", 5, on_progress=events.append)
     revised = next(e for e in events if e.phase == "revised")
     assert (revised.added, revised.reopened, revised.total) == (1, 0, 2)
+    assert revised.node_title == "Storage"
+    migrations = next(e for e in events if e.phase == "checking" and e.node == "migrations")
+    assert migrations.node_title == "Migrations"
+    assert '- db: "Storage"' in provider.prompts[2]
+    assert '- migrations: "Migrations"' in provider.prompts[2]
+
+
+def test_interviewer_has_exact_titles_for_current_dependency_and_other_topics():
+    graph = Graph(goal="goal")
+    graph.add(Node(id="scope", title="Scope", content="Every sink must be covered"))
+    graph.add(Node(id="sinks", title="Sink handling", content="Decide how", depends_on=["scope"]))
+    graph.add(Node(id="delivery", title="Delivery", content="Unrelated full content"))
+    graph.validate("scope")
+    graph.validate("delivery")
+    root_hash = graph.root_hash()
+    question = 'Does "Scope" apply to every sink in "Sink handling"?'
+    provider = FakeProvider([json.dumps({"question": question})])
+    events: list[Progress] = []
+    result = run_interview(graph, provider, lambda _: None, on_progress=events.append)
+    prompt = provider.prompts[0]
+    assert "use its exact title in double quotes" in prompt
+    assert "do not invent titles" in prompt
+    assert "Node sinks: Sink handling" in prompt
+    assert 'Dependencies:\n- scope: "Scope": Every sink must be covered' in prompt
+    assert '- delivery: "Delivery"' in prompt and "Unrelated full content" not in prompt
+    assert result.paused and graph.root_hash() == root_hash
+    assert graph.interview is not None and graph.interview.question == question
+    assert next(e for e in events if e.phase == "asking").node_title == "Sink handling"
+
+
+def test_progress_refreshes_after_checking_callback_changes_validation():
+    graph = Graph(goal="goal")
+    graph.add(Node(id="a", title="Current topic", content="undecided"))
+    graph.add(Node(id="b", title="Other topic", content="specified"))
+    events: list[Progress] = []
+
+    def notify(progress: Progress) -> None:
+        events.append(progress)
+        if progress.phase == "checking":
+            graph.validate("b")
+
+    run_interview(
+        graph,
+        FakeProvider([json.dumps({"question": "Clarify?"})]),
+        lambda _: None,
+        on_progress=notify,
+    )
+    asking = next(e for e in events if e.phase == "asking")
+    assert (asking.settled, asking.left_in_round) == (1, 1)
+    graph.check_interview()
+
+
+def test_progress_refreshes_after_history_callback_reopens_a_topic(tmp_path):
+    graph = Graph(goal="goal")
+    graph.add(Node(id="db", title="DB", content="undecided"))
+    graph.add(Node(id="api", title="API", content="specified"))
+    graph.validate("api")
+    events: list[Progress] = []
+    answers = iter(["answer", None])
+    path = tmp_path / "graph.json"
+
+    def record(event: InterviewEvent) -> None:
+        if event["event"] == "answered":
+            graph.nodes["api"].content = "Changed by the history callback"
+
+    run_interview(
+        graph,
+        provider_with({"content": "decided"}, {"db": ["First?", "Again?"]}),
+        lambda _: next(answers),
+        on_change=lambda current: current.save(path),
+        on_event=record,
+        on_progress=events.append,
+    )
+    revised = next(e for e in events if e.phase == "revised")
+    assert (revised.settled, revised.reopened) == (0, 1)
+    Graph.load(path).check_interview()
+
+
+def test_progress_retains_reviewed_title_when_history_callback_removes_the_topic():
+    graph = Graph(nodes={"a": Node(id="a", title="Ready topic", content="specified")})
+    events: list[Progress] = []
+
+    def discard(event: InterviewEvent) -> None:
+        graph.nodes.pop(event["node"])
+
+    result = run_interview(
+        graph,
+        FakeProvider([json.dumps({"question": None})]),
+        lambda _: None,
+        on_event=discard,
+        on_progress=events.append,
+    )
+    assert result.converged and not graph.nodes and graph.interview is None
+    assert events[-1].phase == "settled" and events[-1].node_title == "Ready topic"
+    assert (events[-1].total, events[-1].settled, events[-1].left_in_round) == (0, 0, 0)
 
 
 def test_answer_that_changes_a_settled_dependent_reopens_it():
@@ -146,8 +244,18 @@ def test_reporter_prints_summary_before_question_and_delta_only_when_changed():
     reporter.close()
     assert out.getvalue().splitlines() == [
         *summary(sample()).splitlines(),
+        'Topic: "DB"',
         "answer applied: +1 new topic",
     ]
+
+
+@pytest.mark.parametrize("title", ["Scope", "[bold]Scope[/bold]", 'A "quoted" topic', "Caf\u00e9"])
+def test_reporter_prints_the_current_title_literally_off_terminal(title):
+    out = StringIO()
+    reporter = Reporter(Console(file=out))
+    reporter.handle(sample(node_title=title))
+    reporter.close()
+    assert out.getvalue().splitlines()[-1] == f'Topic: "{title}"'
 
 
 def test_working_prints_message_off_terminal_and_cleans_up_on_error():
@@ -171,11 +279,12 @@ def test_spinner_text_is_not_parsed_as_markup(monkeypatch, phase, label):
     monkeypatch.setenv("TERM", "xterm")
     out = StringIO()
     reporter = Reporter(Console(file=out, force_terminal=True, width=120))
-    reporter.handle(sample(phase=phase, node="[bold]x[/bold]"))
+    reporter.handle(sample(phase=phase, node="hidden-node-id", node_title="[bold]x[/bold]"))
     reporter.close()
     reporter.close()
     assert "[bold]x[/bold]" in out.getvalue()
     assert label in out.getvalue()
+    assert "hidden-node-id" not in out.getvalue()
 
 
 def stale_repo(tmp_path):
@@ -189,6 +298,7 @@ def stale_repo(tmp_path):
 
 def test_plan_cli_shows_progress_and_what_the_answer_reopened(tmp_path, monkeypatch):
     repo = stale_repo(tmp_path)
+    title = Graph.load(repo / ".automagic" / "plan" / "graph.json").nodes["a"].title
     provider = scripted([], {"a": ["Which approach?"]})
     monkeypatch.setattr("automagic.cli.get_provider", lambda cfg: provider)
     out = runner.invoke(
@@ -197,7 +307,8 @@ def test_plan_cli_shows_progress_and_what_the_answer_reopened(tmp_path, monkeypa
     assert out.exit_code == 0, out.output
     line = "3/4 topics settled · pass 1/8\n1 topic pending this pass · 1 unsettled overall"
     assert line in out.output
-    assert out.output.index(line) < out.output.index("? Which approach?")
+    assert out.output.index(line) < out.output.index(f'Topic: "{title}"')
+    assert out.output.index(f'Topic: "{title}"') < out.output.index("? Which approach?")
     assert "answer applied: 3 settled topics re-opened" in out.output
     assert "Planning settled after 2 interview passes, 1 question." in out.output
 

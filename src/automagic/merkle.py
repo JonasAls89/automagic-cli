@@ -152,7 +152,7 @@ class Graph(BaseModel):
     def invalid(self) -> list[str]:
         """Nodes whose current hash differs from their validated hash, dependencies first."""
         hashes = self._hashes()
-        return [n for n in self.order() if self.nodes[n].validated_hash != hashes[n]]
+        return [n for n, digest in hashes.items() if self.nodes[n].validated_hash != digest]
 
     def is_stable(self) -> bool:
         return not self.invalid()

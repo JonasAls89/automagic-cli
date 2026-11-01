@@ -38,18 +38,25 @@ Pause/resume preserves the exact unanswered question without another question-ge
 
 Older plans without a checkpoint retain their decisions but start a fresh validation pass with a notice. If a checkpoint is invalid or no longer matches the graph, the CLI asks before discarding the saved position and any unapplied input; declining leaves the files unchanged. Invalid graph data remains an error ([cli.py](src/automagic/cli.py)).
 
-Before each question the CLI prints where you are ([progress.py](src/automagic/progress.py)), and shows a spinner while the provider works:
+Before each question the CLI prints where you are and the current topic's title ([progress.py](src/automagic/progress.py)), and shows a spinner while the provider works:
 
 ```
 Planning: [########------------] 4/10 topics settled · pass 2/8
 5 topics pending this pass · 6 unsettled overall
+Topic: "Sink handling"
+? Does "Scope" apply to every sink in "Sink handling"?
 ```
 
+- `Topic: "..."` identifies the current topic by title, not its internal ID. Reviewing, revising and settled spinners also use titles.
 - `settled/total topics` counts topics whose current hash equals their validated hash. Settled planning topics are not completed implementation work.
 - `pass N/M` identifies the current interview pass and its limit, not the number of work items.
 - `N topics pending this pass` counts unsettled topics in the saved pass's queue, including the current topic.
 - `N unsettled overall` is the exact current number of unsettled topics across the plan, not a forecast of the questions remaining. A topic review can settle it without asking a question.
 - Counts can move backwards. After an answer, `answer applied: +1 new topic, 2 settled topics re-opened` says why: the answer added topics or changed a topic that settled topics depend on. New or re-opened topics outside the current queue wait for another pass.
+
+The interviewer receives dependency titles and a compact catalogue of topic names, and is instructed to quote the exact title whenever a question refers to a topic ([interview.py](src/automagic/interview.py)). This is prompt guidance, not a guarantee about provider wording; the current-topic label is always printed. Resume shows saved question text unchanged, with its topic label supplied from the graph. If a history callback removes the reviewed topic, completion feedback retains its reviewed title.
+
+Reviews remain single-topic and sequential. The loop reuses invalid-topic sets only within unchanged local state, and invalidity checks reuse the hash map's dependency-first order instead of walking the graph again ([interview.py](src/automagic/interview.py), [merkle.py](src/automagic/merkle.py)). These changes reduce local graph work, not Copilot request counts or model/network latency. Validation and durable saves are unchanged; see [ADR 0006](docs/adr/0006-named-interview-topics-and-local-state-reuse.md).
 
 State is stored in `.automagic/plan/`; commit it so reviewers can inspect the plan:
 

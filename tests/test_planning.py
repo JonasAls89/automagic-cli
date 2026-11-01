@@ -28,6 +28,27 @@ def test_change_invalidates_node_and_ancestors_only():
     assert g.root_hash() != root
 
 
+def test_invalid_reuses_hash_order_without_another_topological_walk(monkeypatch):
+    graph = Graph(
+        nodes={
+            "a": Node(id="a", title="A", content="a", depends_on=["z"]),
+            "m": Node(id="m", title="M", content="m", depends_on=["a"]),
+            "z": Node(id="z", title="Z", content="z"),
+        }
+    )
+    calls = 0
+    original_order = Graph.order
+
+    def order(current: Graph) -> list[str]:
+        nonlocal calls
+        calls += 1
+        return original_order(current)
+
+    monkeypatch.setattr(Graph, "order", order)
+    assert graph.invalid() == ["z", "a", "m"]
+    assert calls == 1
+
+
 def test_hash_is_whitespace_and_order_insensitive():
     g = chain()
     h = g.node_hash("a")
@@ -95,6 +116,73 @@ def test_interview_stops_on_user_done_and_on_round_cap():
     g = seed_graph(provider, "goal", "ctx")
     result = run_interview(g, provider, lambda q: "a", max_rounds=2)
     assert not result.converged and result.rounds == 2
+
+
+@pytest.mark.parametrize(("next_question", "hash_limit"), [(1, 8), (25, 110)])
+def test_26_topic_interview_reuses_local_work_without_skipping_requests_or_saves(
+    tmp_path, monkeypatch, next_question, hash_limit
+):
+    graph = Graph(
+        goal="goal",
+        nodes={
+            f"node-{i:02}": Node(id=f"node-{i:02}", title=f"Topic {i}", content="undecided")
+            for i in range(26)
+        },
+    )
+    measuring = False
+    hash_calls = provider_calls = saves = 0
+    original_hashes = Graph._hashes
+    answers = iter(["answer", None])
+    events = []
+    path = tmp_path / "graph.json"
+
+    def hashes(current: Graph) -> dict[str, str]:
+        nonlocal hash_calls
+        if measuring:
+            hash_calls += 1
+        return original_hashes(current)
+
+    def reply(prompt: str) -> str:
+        nonlocal provider_calls
+        if measuring:
+            provider_calls += 1
+        if prompt.startswith("Revise the node"):
+            return json.dumps({"content": "decided"})
+        nid = prompt.split("Node ", 1)[1].split(":", 1)[0]
+        question = "Clarify?" if nid in {"node-00", f"node-{next_question:02}"} else None
+        return json.dumps({"question": question})
+
+    def ask(_question: str) -> str | None:
+        nonlocal measuring
+        answer = next(answers)
+        measuring = answer is not None
+        return answer
+
+    def save(current: Graph) -> None:
+        nonlocal saves
+        if measuring:
+            saves += 1
+        current.save(path)
+
+    monkeypatch.setattr(Graph, "_hashes", hashes)
+    result = run_interview(
+        graph,
+        FakeProvider(reply),
+        ask,
+        max_rounds=1,
+        on_change=save,
+        on_event=events.append,
+        on_progress=lambda _: None,
+    )
+    assert result.paused and result.rounds == 1
+    assert 0 < hash_calls <= hash_limit
+    assert provider_calls == next_question + 1
+    assert saves == 2 * next_question + 2
+    assert [e["event"] for e in events] == ["answered", *["validated"] * (next_question - 1)]
+    restored = Graph.load(path)
+    restored.check_interview()
+    assert restored.interview is not None
+    assert restored.interview.pending[0] == f"node-{next_question:02}"
 
 
 def test_split_moves_dependents_to_last_part():
