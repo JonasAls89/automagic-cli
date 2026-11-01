@@ -5,6 +5,16 @@ reviewable work items. See [planning terminology](README.md#how-planning-works).
 
 ## Language
 
+**Planning interview**:
+A guided clarification of a goal, its assumptions, and the decisions needed
+to define the intended work.
+See [planning questions](src/automagic/interview.py).
+
+**Interview pause**:
+A stop before planning is settled, with unresolved decisions retained for
+deliberate continuation.
+See [pause and continuation](src/automagic/cli.py).
+
 **Interview durability**:
 Preservation of agreed decisions, interview position, pending input, and
 interview history across an interruption.
