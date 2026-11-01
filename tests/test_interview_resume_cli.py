@@ -149,8 +149,14 @@ def test_ctrl_c_preserves_pending_question_and_nonzero_exit(tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize("boundary", ["before-snapshot", "before-history", "after-history"])
-def test_history_and_answers_recover_once_across_commit_boundaries(tmp_path, monkeypatch, boundary):
+@pytest.mark.parametrize("legacy_content", [None, b"Legacy overview with manual edits\n"])
+def test_history_and_answers_recover_once_across_commit_boundaries(
+    tmp_path, monkeypatch, boundary, legacy_content
+):
     repo, path = saved_repo(tmp_path)
+    overview = path.with_name("plan.md")
+    if legacy_content is not None:
+        overview.write_bytes(legacy_content)
     history = path.with_name("history.jsonl")
     real_save, real_open = Graph.save, Path.open
     failed = False
@@ -205,6 +211,7 @@ def test_history_and_answers_recover_once_across_commit_boundaries(tmp_path, mon
     assert events[0]["answer"] == "saved answer"
     assert len({event["id"] for event in events}) == 2
     assert Graph.load(path).interview is None
+    assert (overview.read_bytes() if overview.exists() else None) == legacy_content
 
 
 @pytest.mark.parametrize("unsupported_checkpoint", [False, True])
@@ -237,8 +244,12 @@ def test_resume_from_committed_graph_creates_a_local_checkpoint(tmp_path, monkey
     assert "interview" not in json.loads(published.read_text())
 
 
-def test_new_plan_discards_old_cursor_and_history(tmp_path, monkeypatch):
+@pytest.mark.parametrize("legacy_content", [None, b"Legacy overview with manual edits\n"])
+def test_new_plan_discards_old_cursor_and_history(tmp_path, monkeypatch, legacy_content):
     repo, path = saved_repo(tmp_path)
+    overview = path.with_name("plan.md")
+    if legacy_content is not None:
+        overview.write_bytes(legacy_content)
     history = path.with_name("history.jsonl")
     history.write_text("obsolete history\n")
     provider = FakeProvider(
@@ -253,6 +264,7 @@ def test_new_plan_discards_old_cursor_and_history(tmp_path, monkeypatch):
     graph = Graph.load(path)
     assert graph.interview is None and graph.goal == "New goal" and set(graph.nodes) == {"new"}
     assert "obsolete history" not in history.read_text()
+    assert (overview.read_bytes() if overview.exists() else None) == legacy_content
 
 
 def test_amendment_starts_a_fresh_interview_not_an_old_question(tmp_path, monkeypatch):

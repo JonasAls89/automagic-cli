@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from automagic.cli import app
@@ -91,14 +92,38 @@ def test_hash_chain_marks_invalid():
     assert chain[0].endswith("(INVALID)") and chain[1].startswith("  a-b")
 
 
-def test_show_command(tmp_path):
+@pytest.mark.parametrize("open_html", [False, True])
+@pytest.mark.parametrize("legacy_content", [None, b"Legacy overview with manual edits\n"])
+def test_show_command(tmp_path, monkeypatch, open_html, legacy_content):
     g = make_graph()
-    g.save(tmp_path / ".automagic" / "plan" / "graph.json")
-    out = runner.invoke(app, ["show", "--path", str(tmp_path)])
-    assert out.exit_code == 0, out.output
-    assert "```mermaid" in out.output
-    assert (tmp_path / ".automagic" / "plan" / "plan.md").exists()
+    plan_dir = tmp_path / ".automagic" / "plan"
+    graph_path = plan_dir / "graph.json"
+    g.save(graph_path)
+    history = [{"event": "validated", "round": 1, "node": "c", "hash": g.node_hash("c")}]
+    history_path = plan_dir / "history.jsonl"
+    history_path.write_text(json.dumps(history[0]) + "\n")
+    saved_graph, saved_history = graph_path.read_bytes(), history_path.read_bytes()
+    overview = plan_dir / "plan.md"
+    if legacy_content is not None:
+        overview.write_bytes(legacy_content)
+    opened: list[str] = []
+    monkeypatch.setattr("automagic.cli.webbrowser.open", opened.append)
+    monkeypatch.setattr(
+        "automagic.cli.get_provider", lambda _: pytest.fail("show must not call an AI provider")
+    )
+    cfg = Config()
+    expected = render_plan(g, partition(g, tmp_path, cfg), cfg, history)
+    args = ["show", "--path", str(tmp_path), *(["--open"] if open_html else [])]
+    for _ in range(2):
+        out = runner.invoke(app, args)
+        assert out.exit_code == 0, out.output
+        assert expected in out.output
+        assert "Plan written to" not in out.output
+        assert (overview.read_bytes() if overview.exists() else None) == legacy_content
+        assert graph_path.read_bytes() == saved_graph
+        assert history_path.read_bytes() == saved_history
     node = runner.invoke(app, ["show", "--path", str(tmp_path), "--node", "c"])
     assert "a-b" in node.output
     bad = runner.invoke(app, ["show", "--path", str(tmp_path), "--node", "zzz"])
     assert bad.exit_code == 1
+    assert opened == [(plan_dir / "plan.html").resolve().as_uri()] * (2 if open_html else 0)

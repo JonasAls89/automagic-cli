@@ -209,7 +209,8 @@ def test_unsupported_language(tmp_path):
     assert result.exit_code == 1
 
 
-def test_worktrees_create_end_to_end(tmp_path):
+@pytest.mark.parametrize("legacy_content", [None, b"Legacy overview with manual edits\n"])
+def test_worktrees_create_end_to_end(tmp_path, legacy_content):
     repo = tmp_path / "repo"
     repo.mkdir()
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
@@ -223,13 +224,18 @@ def test_worktrees_create_end_to_end(tmp_path):
     for n in g.nodes:
         g.validate(n)
     g.save(repo / ".automagic" / "plan" / "graph.json")
+    overview = repo / ".automagic" / "plan" / "plan.md"
+    if legacy_content is not None:
+        overview.write_bytes(legacy_content)
 
     shown = runner.invoke(app, ["worktrees", "--path", str(repo)])
     assert shown.exit_code == 0 and "git worktree add" in shown.output
     assert not (tmp_path / "repo.worktrees").exists()
+    assert (overview.read_bytes() if overview.exists() else None) == legacy_content
 
     done = runner.invoke(app, ["worktrees", "--path", str(repo), "--create", "--yes"])
     assert done.exit_code == 0, done.output
     briefs = sorted((tmp_path / "repo.worktrees").glob("*/.automagic/BRIEF.md"))
     assert len(briefs) == 2
     assert "do a" in briefs[0].read_text()
+    assert (overview.read_bytes() if overview.exists() else None) == legacy_content

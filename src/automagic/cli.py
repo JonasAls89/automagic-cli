@@ -105,15 +105,15 @@ def _ask(question: str) -> str | None:
     return None if answer.strip() in {"/done", "/quit"} else answer
 
 
-def _show_proposals(graph: Graph, items: list[sizing.WorkItem], cfg: Config, root: Path) -> None:
+def _show_proposals(graph: Graph, items: list[sizing.WorkItem], cfg: Config, root: Path) -> str:
     plan_dir = state_dir(root) / "plan"
     plan_dir.mkdir(parents=True, exist_ok=True)
-    plan_path = plan_dir / "plan.md"
     history = render.load_history(plan_dir / "history.jsonl")
-    plan_path.write_text(render.render_plan(graph, items, cfg, history))
+    markdown = render.render_plan(graph, items, cfg, history)
     state_path = plan_dir / "run.json"
     state = runner.RunState.load(state_path) if state_path.exists() else None
-    (plan_dir / "plan.html").write_text(htmlview.render_html(graph, items, state))
+    html_path = plan_dir / "plan.html"
+    html_path.write_text(htmlview.render_html(graph, items, state))
     plandocs.write(root, graph, items, history, cfg.max_changed_lines)
     if (root / "docs" / "CONTEXT.md").exists():
         guardrails.update_index(root)
@@ -124,9 +124,9 @@ def _show_proposals(graph: Graph, items: list[sizing.WorkItem], cfg: Config, roo
             f"  {item.id}: {', '.join(item.node_ids)} "
             f"(~{item.tokens} tokens, ~{item.lines} lines){flag}"
         )
-    typer.echo(f"Plan written to {plan_path.relative_to(root)}")
-    typer.echo(f"Graph view: {plan_path.with_name('plan.html').relative_to(root)}")
+    typer.echo(f"Graph view: {html_path.relative_to(root)}")
     typer.echo(f"Node documents: {plandocs.PLAN_DOCS.as_posix()}/ (commit these)")
+    return markdown
 
 
 def _load_graph(root: Path, *, include_checkpoint: bool = False) -> Graph:
@@ -357,7 +357,7 @@ def show(
     ] = None,
     open_html: Annotated[bool, typer.Option("--open", help="Open plan.html in a browser.")] = False,
 ) -> None:
-    """Regenerate plan.md, plan.html and docs/plan/ (no AI calls) and print the plan."""
+    """Print the plan and regenerate plan.html and docs/plan/ (no AI calls)."""
     root = path.resolve()
     graph = _load_graph(root)
     if node:
@@ -368,8 +368,7 @@ def show(
         return
     cfg = load_config(root)
     items = sizing.partition(graph, root, cfg)
-    _show_proposals(graph, items, cfg, root)
-    typer.echo((state_dir(root) / "plan" / "plan.md").read_text())
+    typer.echo(_show_proposals(graph, items, cfg, root))
     if open_html:
         webbrowser.open((state_dir(root) / "plan" / "plan.html").resolve().as_uri())
 

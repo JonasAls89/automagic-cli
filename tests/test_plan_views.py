@@ -64,6 +64,7 @@ def test_show_writes_node_docs_html_and_detects_stale_docs(tmp_path):
     assert "Planning topic `b`" in doc
     assert "| Planning topic | Work item |" in (docs / "_index.md").read_text()
     assert (repo / ".automagic" / "plan" / "plan.html").exists()
+    assert not (repo / ".automagic" / "plan" / "plan.md").exists()
     assert guardrails.check(repo, Config()) == []
     (docs / "b.md").write_text(f"<!-- automagic:node b {'0' * 64} -->\n" + doc.split("\n", 1)[1])
     assert any("b.md" in p for p in plandocs.stale(repo))
@@ -169,8 +170,12 @@ def test_amend_rolls_back_on_cycle():
     g.check()
 
 
-def test_plan_amend_cli_revalidates_and_logs(tmp_path, monkeypatch):
+@pytest.mark.parametrize("legacy_content", [None, b"Legacy overview with manual edits\n"])
+def test_plan_amend_cli_revalidates_and_logs(tmp_path, monkeypatch, legacy_content):
     repo = make_repo(tmp_path, CHAIN)
+    overview = repo / ".automagic" / "plan" / "plan.md"
+    if legacy_content is not None:
+        overview.write_bytes(legacy_content)
 
     def reply(prompt: str) -> str:
         if prompt.startswith("You maintain an agreed plan"):
@@ -188,3 +193,4 @@ def test_plan_amend_cli_revalidates_and_logs(tmp_path, monkeypatch):
     history = (repo / ".automagic" / "plan" / "history.jsonl").read_text()
     assert '"event": "amended"' in history
     assert "do a differently" in (repo / "docs" / "plan" / "a.md").read_text()
+    assert (overview.read_bytes() if overview.exists() else None) == legacy_content
