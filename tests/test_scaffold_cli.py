@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import tomllib
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -43,6 +44,15 @@ def test_init_creates_baseline_and_passes_own_check(tmp_path, language):
 
 def test_slash_commands_only_generate_skills():
     assert set(slash_files()) == {f".github/skills/automagic-{name}/SKILL.md" for name in COMMANDS}
+
+
+@pytest.mark.parametrize("command", ["plan", "show"])
+def test_plan_skills_present_terminal_output_and_match_checked_in(command):
+    relative = f".github/skills/automagic-{command}/SKILL.md"
+    content = slash_files()[relative]
+    assert "plan.md" not in content
+    assert "`automagic show`" in content and "terminal output" in content
+    assert (Path(__file__).resolve().parents[1] / relative).read_text() == content
 
 
 @pytest.mark.parametrize("force", [False, True])
