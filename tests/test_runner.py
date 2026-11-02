@@ -8,7 +8,17 @@ from automagic import sizing, worktrees
 from automagic.cli import app
 from automagic.config import Config
 from automagic.merkle import Graph, Node
-from automagic.runner import RunError, RunState, agent_command, git, prepare_worktree, waves
+from automagic.runner import (
+    ItemRun,
+    RunError,
+    RunState,
+    agent_command,
+    git,
+    item_hash,
+    prepare_run,
+    prepare_worktree,
+    waves,
+)
 from automagic.sizing import WorkItem
 
 runner = CliRunner()
@@ -60,6 +70,86 @@ def test_waves_group_by_dependency():
         waves([WorkItem(id="x", depends_on=["y"]), WorkItem(id="y", depends_on=["x"])])
 
 
+@pytest.mark.parametrize("requested", [["wi-04"], ["d"], ["b", "wi-04", "d"]])
+def test_run_preparation_skips_completed_prerequisites_without_mutating_inputs(tmp_path, requested):
+    graph = Graph(goal="Demo", nodes={node.id: node.model_copy(deep=True) for node in CHAIN})
+    items = sizing.partition(graph, tmp_path, Config())
+    state = RunState(
+        root_hash=graph.root_hash(),
+        items={"wi-01": ItemRun(status="done", hash=item_hash(graph, items[0]))},
+    )
+    path = tmp_path / "run.json"
+    state.save(path)
+    original_state = path.read_bytes()
+    original_items = [item.depends_on.copy() for item in items]
+
+    prepared = prepare_run(graph, items, path, only=requested)
+
+    assert prepared.selected == {"wi-02", "wi-03", "wi-04"}
+    assert prepared.waves == [["wi-02", "wi-03"], ["wi-04"]]
+    assert [item.depends_on for item in items] == original_items
+    assert path.read_bytes() == original_state
+
+
+@pytest.mark.parametrize(
+    ("only", "restart", "changed", "expected", "preview"),
+    [
+        (["wi-02"], False, False, set(), []),
+        (["b"], False, True, {"wi-02"}, [["wi-02"]]),
+        (["b"], True, False, {"wi-01", "wi-02"}, [["wi-01"], ["wi-02"]]),
+        ([], False, False, set(), []),
+        (None, False, False, None, [["wi-01"], ["wi-02", "wi-03"], ["wi-04"]]),
+    ],
+)
+def test_run_preparation_preserves_completed_stale_restart_and_full_preview_rules(
+    tmp_path, only, restart, changed, expected, preview
+):
+    graph = Graph(goal="Demo", nodes={node.id: node.model_copy(deep=True) for node in CHAIN})
+    items = sizing.partition(graph, tmp_path, Config())
+    state = RunState(
+        root_hash=graph.root_hash(),
+        items={item.id: ItemRun(status="done", hash=item_hash(graph, item)) for item in items[:2]},
+    )
+    path = tmp_path / "run.json"
+    state.save(path)
+    if changed:
+        graph.nodes["b"].content = "Use different storage"
+
+    prepared = prepare_run(graph, items, path, only=only, restart=restart)
+
+    assert prepared.selected == expected
+    assert prepared.waves == preview
+
+
+@pytest.mark.parametrize(("only", "restart"), [(None, False), (["b"], True)])
+def test_run_preparation_does_not_read_saved_state_when_unused(tmp_path, only, restart):
+    graph = Graph(goal="Demo", nodes={node.id: node.model_copy(deep=True) for node in CHAIN[:2]})
+    items = sizing.partition(graph, tmp_path, Config())
+    path = tmp_path / "run.json"
+    path.write_text("invalid saved state")
+
+    prepared = prepare_run(graph, items, path, only=only, restart=restart)
+
+    assert prepared.waves == [["wi-01"], ["wi-02"]]
+    with pytest.raises(ValueError):
+        prepare_run(graph, items, path, only=["b"])
+    assert path.read_text() == "invalid saved state"
+
+
+def test_run_preparation_reports_unknown_ids_and_dependency_cycles_without_writes(tmp_path):
+    graph = Graph()
+    path = tmp_path / "run.json"
+    with pytest.raises(RunError, match="unknown work item or planning topic 'missing'"):
+        prepare_run(graph, [WorkItem(id="a")], path, only=["missing"])
+    with pytest.raises(RunError, match="dependencies contain a cycle"):
+        prepare_run(
+            graph,
+            [WorkItem(id="a", depends_on=["b"]), WorkItem(id="b", depends_on=["a"])],
+            path,
+        )
+    assert not path.exists()
+
+
 def test_agent_command_substitutes_prompt_and_requires_placeholder():
     cmd = agent_command(Config(), "do it")
     assert cmd[:3] == ["copilot", "-p", "do it"]
@@ -82,6 +172,63 @@ def test_dry_run_creates_nothing(tmp_path):
     out = runner.invoke(app, ["run", "--path", str(repo), "--dry-run"])
     assert out.exit_code == 0, out.output
     assert "wave 1: wi-01" in out.output and "wave 2: wi-02, wi-03" in out.output
+    assert not (tmp_path / "repo.worktrees").exists()
+
+
+@pytest.mark.parametrize("requested", [["--only", " b,wi-03 "], ["--only", "b", "--only", "c"]])
+def test_selected_run_preview_parses_ids_and_skips_completed_prerequisites(tmp_path, requested):
+    repo = make_repo(tmp_path, CHAIN)
+    graph = Graph.load(repo / ".automagic" / "plan" / "graph.json")
+    path = repo / ".automagic" / "plan" / "run.json"
+    RunState(root_hash=graph.root_hash(), items={"wi-01": ItemRun(status="done")}).save(path)
+    original = path.read_bytes()
+
+    result = runner.invoke(app, ["run", "--path", str(repo), "--dry-run", *requested])
+
+    assert result.exit_code == 0, result.output
+    assert "wave 1: wi-02, wi-03" in result.output
+    assert "wi-01" not in result.output and "wi-04" not in result.output
+    assert path.read_bytes() == original
+    assert not (tmp_path / "repo.worktrees").exists()
+
+
+def test_run_rereads_execution_state_after_confirmation(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path, CHAIN[:2])
+    configure(repo, WRITE)
+    graph = Graph.load(repo / ".automagic" / "plan" / "graph.json")
+    path = repo / ".automagic" / "plan" / "run.json"
+    state = RunState(
+        root_hash=graph.root_hash(),
+        items={"wi-01": ItemRun(status="done"), "wi-02": ItemRun()},
+    )
+    state.save(path)
+
+    def confirm(prompt):
+        state.items["wi-02"].status = "done"
+        state.save(path)
+        return True
+
+    monkeypatch.setattr("automagic.cli.typer.confirm", confirm)
+    result = runner.invoke(app, ["run", "--path", str(repo), "--only", "b"])
+
+    assert result.exit_code == 0, result.output
+    assert "wave 1: wi-02" in result.output and "wi-02 [done]" in result.output
+    assert "wi-02: running" not in result.output
+    assert not (tmp_path / "repo.worktrees").exists()
+
+
+def test_selection_errors_precede_confirmation_but_stale_plan_errors_follow_it(tmp_path):
+    repo = make_repo(tmp_path, CHAIN[:1])
+    path = repo / ".automagic" / "plan" / "run.json"
+    RunState(root_hash="old", items={"wi-01": ItemRun(status="done")}).save(path)
+
+    unknown = runner.invoke(app, ["run", "--path", str(repo), "--only", "unknown"], input="n\n")
+    assert unknown.exit_code == 1 and "unknown work item" in unknown.output
+    assert "Launch agents unattended" not in unknown.output
+    declined = runner.invoke(app, ["run", "--path", str(repo)], input="n\n")
+    assert declined.exit_code == 0 and "plan changed" not in declined.output
+    confirmed = runner.invoke(app, ["run", "--path", str(repo)], input="y\n")
+    assert confirmed.exit_code == 1 and "plan changed since the last run" in confirmed.output
     assert not (tmp_path / "repo.worktrees").exists()
 
 

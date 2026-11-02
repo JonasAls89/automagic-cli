@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import shlex
 import webbrowser
-from dataclasses import replace
 from pathlib import Path
 from typing import Annotated
 
@@ -392,19 +391,15 @@ def run(
     try:
         repo = worktrees.git_root(root)
         props = worktrees.propose(graph, items, repo)
-        selected = None
-        if only:
-            saved = None if restart else _saved_run(root)
-            done = runner.finished(graph, items, saved) if saved else set()
-            selected = runner.select(
-                items, [x.strip() for v in only for x in v.split(",") if x.strip()], done
-            )
-        scoped = [
-            replace(i, depends_on=[d for d in i.depends_on if selected is None or d in selected])
-            for i in items
-            if selected is None or i.id in selected
-        ]
-        plan_waves = runner.waves(scoped)
+        requested = [x.strip() for v in only for x in v.split(",") if x.strip()] if only else None
+        prepared = runner.prepare_run(
+            graph,
+            items,
+            state_dir(root) / "plan" / "run.json",
+            only=requested,
+            restart=restart,
+        )
+        selected = prepared.selected
         command = runner.agent_command(cfg)
     except (RuntimeError, ValueError) as exc:
         typer.echo(f"error: {exc}", err=True)
@@ -412,7 +407,7 @@ def run(
     if selected is not None and not selected:
         typer.echo("nothing to run: the selected work items are already done")
         return
-    for n, wave in enumerate(plan_waves, 1):
+    for n, wave in enumerate(prepared.waves, 1):
         typer.echo(f"wave {n}: {', '.join(wave)}")
     typer.echo(f"agent: {shlex.join(command)}")
     typer.echo(f"verify: {cfg.verify_command or '(none)'}; concurrency {cfg.max_concurrency}")

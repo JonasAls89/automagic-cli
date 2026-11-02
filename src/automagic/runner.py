@@ -8,6 +8,7 @@ import shlex
 import subprocess  # nosec B404
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -152,6 +153,34 @@ def select(items: list[WorkItem], only: list[str], done: set[str]) -> set[str]:
         chosen.add(current)
         stack.extend(by_id[current].depends_on)
     return chosen
+
+
+@dataclass(frozen=True)
+class RunPreparation:
+    selected: set[str] | None
+    waves: list[list[str]]
+
+
+def prepare_run(
+    graph: Graph,
+    items: list[WorkItem],
+    state_path: Path,
+    *,
+    only: list[str] | None = None,
+    restart: bool = False,
+) -> RunPreparation:
+    """Prepare selection and preview waves without changing items or saved state."""
+    selected = None
+    if only is not None:
+        saved = RunState.load(state_path) if not restart and state_path.exists() else None
+        done = finished(graph, items, saved) if saved else set()
+        selected = select(items, only, done)
+    scoped = [
+        replace(item, depends_on=[d for d in item.depends_on if selected is None or d in selected])
+        for item in items
+        if selected is None or item.id in selected
+    ]
+    return RunPreparation(selected, waves(scoped))
 
 
 def agent_command(cfg: Config, prompt: str = PROMPT) -> list[str]:
