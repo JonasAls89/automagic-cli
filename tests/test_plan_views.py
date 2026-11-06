@@ -316,10 +316,14 @@ def test_plan_amend_cli_revalidates_and_logs(tmp_path, monkeypatch, legacy_conte
     def reply(prompt: str) -> str:
         if prompt.startswith("You maintain an agreed plan"):
             return json.dumps({"edits": [{"id": "a", "content": "do a differently"}]})
-        return json.dumps({"question": None})
+        return assessment(settled=["a", "b", "c", "d"], ready=True)
 
     monkeypatch.setattr("automagic.cli.get_provider", lambda cfg: FakeProvider(reply))
-    out = runner.invoke(app, ["plan", "--amend", "change a", "--path", str(repo), "--no-create"])
+    out = runner.invoke(
+        app,
+        ["plan", "--amend", "change a", "--path", str(repo), "--no-create"],
+        input="/approve\n",
+    )
     assert out.exit_code == 0, out.output
     assert "Edited planning topics: a" in out.output
     assert "New planning topics: -" in out.output

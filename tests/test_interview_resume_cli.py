@@ -3,7 +3,9 @@ from pathlib import Path
 
 import pytest
 import typer
-from test_interview_resume import graph_with_nodes, questioning_provider
+from test_bounded_interview import assessment, question
+from test_interview_resume import graph_with_nodes
+from test_interview_resume import questioning_provider as legacy_provider
 from test_runner import make_repo
 from typer.testing import CliRunner
 
@@ -16,11 +18,34 @@ from automagic.providers import FakeProvider
 runner = CliRunner()
 
 
+def questioning_provider() -> FakeProvider:
+    def reply(prompt):
+        if prompt.startswith("Revise the node"):
+            node = json.loads(prompt.split("\nNode: ", 1)[1].split("\nQuestion:", 1)[0])
+            return json.dumps({"content": f"Saved decision for {node['id']}", "resolved": True})
+        graph = json.loads(prompt.split("Goal and graph:\n", 1)[1].split("Prior answers:", 1)[0])
+        pending = [
+            nid
+            for nid, node in graph["nodes"].items()
+            if not node["content"].startswith("Saved decision")
+        ]
+        if not pending:
+            return assessment(settled=graph["nodes"], ready=True)
+        questions = []
+        for nid in pending[:3]:
+            item = question(nid, nid)
+            item["question"] = f"Question for {nid}?"
+            questions.append(item)
+        return assessment(questions=questions)
+
+    return FakeProvider(reply)
+
+
 def saved_repo(tmp_path, *, paused: bool = True) -> tuple[Path, Path]:
     repo = make_repo(tmp_path, list(graph_with_nodes().nodes.values()))
     graph = graph_with_nodes()
     if paused:
-        run_interview(graph, questioning_provider(), lambda _: None)
+        run_interview(graph, questioning_provider(), lambda _: None, max_questions=12)
     path = repo / ".automagic" / "plan" / "graph.json"
     graph.save(path)
     return repo, path
@@ -30,7 +55,7 @@ def resume(repo: Path, input: str = "/done\n"):
     return runner.invoke(app, ["plan", "--resume", "--path", str(repo), "--no-create"], input=input)
 
 
-def test_cli_resumes_same_question_and_ten_pending_topics_without_a_provider_call(
+def test_cli_resumes_same_batch_and_remaining_allowance_without_a_provider_call(
     tmp_path, monkeypatch
 ):
     repo = make_repo(tmp_path, list(graph_with_nodes(17).nodes.values()))
@@ -42,17 +67,18 @@ def test_cli_resumes_same_question_and_ten_pending_topics_without_a_provider_cal
         questioning_provider(),
         lambda _: next(answers),
         on_change=lambda current: current.save(path),
+        max_questions=12,
     )
     provider = FakeProvider([])
     monkeypatch.setattr("automagic.cli.get_provider", lambda _: provider)
     result = resume(repo)
     assert result.exit_code == 2, result.output
     assert "0/17 topics settled" in result.output
-    assert "pass 1/8" in result.output and "10 topics pending this pass" in result.output
+    assert "pass 3/8" in result.output and "2 topics pending this pass" in result.output
+    assert "Questions remaining: 5" in result.output
     assert 'Topic: "Node 7"' in result.output
-    assert result.output.index('Topic: "Node 7"') < result.output.index("? Question for node-07?")
-    assert "? Question for node-07?" in result.output
-    assert "Plan paused during interview pass" in result.output and provider.prompts == []
+    assert result.output.index('Topic: "Node 7"') < result.output.index("Question for node-07?")
+    assert "Plan saved but not approved" in result.output and provider.prompts == []
 
 
 def test_legacy_graph_receives_a_notice_once_and_retains_saved_decisions(tmp_path, monkeypatch):
@@ -61,12 +87,12 @@ def test_legacy_graph_receives_a_notice_once_and_retains_saved_decisions(tmp_pat
     path.write_text(graph.model_dump_json(exclude={"interview"}))
     provider = questioning_provider()
     monkeypatch.setattr("automagic.cli.get_provider", lambda _: provider)
-    first = resume(repo)
-    assert first.exit_code == 2 and "No saved interview position" in first.output
+    first = resume(repo, "y\n/done\n")
+    assert first.exit_code == 2 and "Legacy plan" in first.output
     assert Graph.load(path).nodes == graph.nodes
     provider = FakeProvider([])
     second = resume(repo)
-    assert second.exit_code == 2 and "No saved interview position" not in second.output
+    assert second.exit_code == 2 and "Legacy plan" not in second.output
     assert provider.prompts == []
 
 
@@ -83,9 +109,9 @@ def test_checkpoint_reset_requires_confirmation_and_preserves_graph_and_history(
     elif change == "version":
         data["interview"]["version"] = 2
     elif change == "question":
-        data["interview"]["question"] = None
+        data["interview"]["planning"]["batch"][0]["question"] = None
     else:
-        data["interview"]["pending"] = ["missing-node"]
+        data["interview"]["planning"]["batch"][0]["node"] = "missing-node"
     path.write_text(json.dumps(data))
     original = path.read_bytes()
     graph_only = Graph.load(path, include_checkpoint=False)
@@ -110,9 +136,9 @@ def test_checkpoint_reset_requires_confirmation_and_preserves_graph_and_history(
     assert path.read_bytes() == original and provider.prompts == []
     accepted = resume(repo, "y\n/done\n")
     assert accepted.exit_code == 2, accepted.output
-    assert Graph.load(path).model_dump(exclude={"interview"}) == graph_only.model_dump(
-        exclude={"interview"}
-    )
+    restored = Graph.load(path)
+    assert restored.goal == graph_only.goal
+    assert restored.root_hash() == graph_only.root_hash()
     assert history.read_text() == previous
     assert Graph.load(path).interview is not None
 
@@ -192,7 +218,7 @@ def test_history_and_answers_recover_once_across_commit_boundaries(
     restored.check_interview()
     assert restored.interview is not None
     if boundary == "before-snapshot":
-        assert restored.interview.answer == "saved answer"
+        assert restored.interview.planning.answer == "saved answer"
     else:
         assert restored.interview.pending_event is not None
 
@@ -200,17 +226,17 @@ def test_history_and_answers_recover_once_across_commit_boundaries(
         if prompt.startswith("Revise the node"):
             assert boundary == "before-snapshot" and "Answer: saved answer" in prompt
             return json.dumps({"content": "Saved decision for node-00"})
-        return json.dumps({"question": None})
+        return assessment(settled=["node-00"], ready=True)
 
     provider = FakeProvider(recover)
     monkeypatch.setattr("automagic.cli.get_provider", lambda _: provider)
-    second = resume(repo, "")
+    second = resume(repo, "/approve\n")
     assert second.exit_code == 0, second.output
     events = [json.loads(line) for line in history.read_text().splitlines()]
     assert [event["event"] for event in events] == ["answered", "validated"]
     assert events[0]["answer"] == "saved answer"
     assert len({event["id"] for event in events}) == 2
-    assert Graph.load(path).interview is None
+    assert Graph.load(path).interview.planning.phase == "approved"
     assert (overview.read_bytes() if overview.exists() else None) == legacy_content
 
 
@@ -238,8 +264,8 @@ def test_resume_from_committed_graph_creates_a_local_checkpoint(tmp_path, monkey
     graph.save(published, include_checkpoint=False)
     path.unlink()
     monkeypatch.setattr("automagic.cli.get_provider", lambda _: questioning_provider())
-    result = resume(repo)
-    assert result.exit_code == 2 and "No saved interview position" in result.output
+    result = resume(repo, "y\n/done\n")
+    assert result.exit_code == 2 and "Legacy plan" in result.output
     assert Graph.load(path).interview is not None
     assert "interview" not in json.loads(published.read_text())
 
@@ -255,14 +281,17 @@ def test_new_plan_discards_old_cursor_and_history(tmp_path, monkeypatch, legacy_
     provider = FakeProvider(
         [
             json.dumps({"nodes": [{"id": "new", "title": "New", "content": "new decision"}]}),
-            json.dumps({"question": None}),
+            assessment(settled=["new"], ready=True),
         ]
     )
     monkeypatch.setattr("automagic.cli.get_provider", lambda _: provider)
-    result = runner.invoke(app, ["plan", "New goal", "--path", str(repo), "--no-create"], input="")
+    result = runner.invoke(
+        app, ["plan", "New goal", "--path", str(repo), "--no-create"], input="/approve\n"
+    )
     assert result.exit_code == 0, result.output
     graph = Graph.load(path)
-    assert graph.interview is None and graph.goal == "New goal" and set(graph.nodes) == {"new"}
+    assert graph.interview.planning.phase == "approved"
+    assert graph.goal == "New goal" and set(graph.nodes) == {"new"}
     assert "obsolete history" not in history.read_text()
     assert (overview.read_bytes() if overview.exists() else None) == legacy_content
 
@@ -270,20 +299,24 @@ def test_new_plan_discards_old_cursor_and_history(tmp_path, monkeypatch, legacy_
 def test_amendment_starts_a_fresh_interview_not_an_old_question(tmp_path, monkeypatch):
     repo, path = saved_repo(tmp_path)
     graph = Graph.load(path)
+    graph.interview = None
+    run_interview(graph, legacy_provider(), lambda _: None)
     graph.validate("node-00")
     graph.save(path)
     provider = FakeProvider(
         [
             json.dumps({"edits": [{"id": "node-00", "content": "amended"}]}),
-            json.dumps({"question": None}),
+            assessment(settled=["node-00"], ready=True),
         ]
     )
     monkeypatch.setattr("automagic.cli.get_provider", lambda _: provider)
     result = runner.invoke(
-        app, ["plan", "--amend", "Change it", "--path", str(repo), "--no-create"], input=""
+        app,
+        ["plan", "--amend", "Change it", "--path", str(repo), "--no-create"],
+        input="/approve\n",
     )
     assert result.exit_code == 0, result.output
-    assert Graph.load(path).interview is None
+    assert Graph.load(path).interview.planning.phase == "approved"
     assert Graph.load(path).nodes["node-00"].content == "amended"
     assert "Planning settled after 1 interview pass, 0 questions." in result.output
 
@@ -294,13 +327,20 @@ def test_cli_round_limit_notice_and_changed_configuration_extend_only_after_exha
     repo, path = saved_repo(tmp_path, paused=False)
     config = repo / ".automagic" / "config.toml"
     config.write_text(Config(max_rounds=1).to_toml())
-    monkeypatch.setattr("automagic.cli.get_provider", lambda _: questioning_provider())
-    first = resume(repo, "answer\n")
+    provider = FakeProvider(
+        [
+            assessment(questions=[question("node-00")]),
+            '{"content":"Decision one","resolved":true}',
+            assessment(questions=[question("node-00", "next")]),
+        ]
+    )
+    monkeypatch.setattr("automagic.cli.get_provider", lambda _: provider)
+    first = resume(repo, "y\nanswer\nn\n")
     assert first.exit_code == 2, first.output
-    assert "interview pass limit reached after pass 1" in first.output
-    assert "resume grants 1 more interview pass;" in first.output
+    assert "Planning paused: pass safeguard reached" in first.output
+    assert "/extend" in first.output and "question allowance unchanged" in first.output
     config.write_text(Config(max_rounds=2).to_toml())
-    second = resume(repo)
+    second = resume(repo, "y\n/done\n")
     assert second.exit_code == 2 and "pass 2/3" in second.output
     graph = Graph.load(path)
     assert graph.interview is not None
@@ -330,8 +370,10 @@ def test_amendment_cannot_discard_pending_completed_history(tmp_path, monkeypatc
     )
     assert result.exit_code == 1 and "pending interview history" in result.output
     assert path.read_bytes() == original and provider.prompts == []
-    assert resume(repo, "").exit_code == 0
-    assert provider.prompts == []
+    provider = FakeProvider([assessment(settled=["node-00"], ready=True)])
+    monkeypatch.setattr("automagic.cli.get_provider", lambda _: provider)
+    assert resume(repo, "y\n/approve\n").exit_code == 0
+    assert len(provider.prompts) == 1
 
 
 def test_interrupting_new_plan_generation_does_not_replace_old_saved_plan(tmp_path, monkeypatch):

@@ -14,6 +14,7 @@ from automagic import (
     guardrails,
     interview,
     plandocs,
+    planning_ui,
     publication,
     render,
     runner,
@@ -97,13 +98,40 @@ def context(path: PathOpt = Path()) -> None:
     typer.echo("updated docs/CONTEXT.md" if changed else "docs/CONTEXT.md already up to date")
 
 
-def _repo_context(root: Path) -> str:
-    parts = []
+def _repo_context(root: Path, graph: Graph | None = None) -> str:
+    parts = [f"Repository root: {root}"]
     index = root / "docs" / "CONTEXT.md"
     if index.exists():
         parts.append(index.read_text()[:4_000])
     tree = sorted(p.name for p in root.iterdir() if not p.name.startswith(".git"))
     parts.append("Top-level entries: " + ", ".join(tree[:60]))
+    paths = ["README.md", "GLOSSARY.md", "pyproject.toml", "package.json"]
+    if graph is not None:
+        paths.extend(f for node in graph.nodes.values() for f in node.files)
+    remaining = 32_000
+    for name in dict.fromkeys(paths):
+        candidate = (root / name).resolve()
+        if (
+            not candidate.is_relative_to(root)
+            or any(
+                part.startswith(".") or part in {"node_modules", "__pycache__"}
+                for part in candidate.relative_to(root).parts
+            )
+            or candidate.suffix
+            not in {".md", ".py", ".ts", ".tsx", ".js", ".json", ".toml", ".yaml", ".yml"}
+        ):
+            parts.append(f"{name}: not included (outside readable repository sources)")
+            continue
+        if not candidate.is_file():
+            parts.append(f"{name}: not present as a file")
+            continue
+        if remaining <= 0:
+            parts.append("Source context limit reached; omitted facts remain unverified.")
+            break
+        with candidate.open() as source:
+            text = source.read(min(4_000, remaining))
+        parts.append(f"Source {name} (up to 4000 characters):\n{text}")
+        remaining -= len(text)
     return "\n".join(parts)
 
 
@@ -153,16 +181,33 @@ def _resume_graph(root: Path) -> Graph:
         except (GraphError, ValidationError) as exc:
             problem = str(exc)
     if problem is not None:
-        typer.echo(f"Saved interview checkpoint cannot be continued: {problem}", err=True)
-        if not typer.confirm(
-            "Discard saved interview position and pending input, "
-            "keeping agreed decisions and history, and start a fresh pass?"
+        if not planning_ui.recovery_consent(
+            "Saved interview checkpoint cannot be continued.",
+            "/reset",
+            "Discard position and pending input; keep agreed decisions and history",
+            problem,
         ):
-            typer.echo("Nothing saved.")
+            typer.echo("Nothing saved. Existing graph and history were left unchanged.")
             raise typer.Exit(2)
         graph.interview = None
-    elif graph.interview is None and not graph.is_stable():
-        typer.echo("No saved interview position; starting a fresh pass over saved decisions.")
+    elif graph.interview is None or graph.interview.planning is None:
+        typer.echo(
+            "Legacy plan: historical question counts and final approval are unknown. "
+            "No new-style interview position is saved."
+        )
+        if not planning_ui.recovery_consent(
+            "Start a bounded interview?",
+            "/start",
+            "Keep decisions/history; discard old pending position/input; "
+            "start new question accounting",
+            "Legacy plans have no reliable historical question count or final approval. "
+            "Starting preserves agreed decisions and history, but replaces the old pending "
+            "position and input. Stopping leaves all existing saved files unchanged.",
+        ):
+            typer.echo("Nothing saved. Existing graph and history were left unchanged.")
+            raise typer.Exit(2)
+        InterviewDurability(state_dir(root) / "plan" / "graph.json").flush_event(graph)
+        graph.interview = None
     return graph
 
 
@@ -222,15 +267,15 @@ def plan(
 ) -> None:
     """Interview until all planning topics are settled, then propose worktrees."""
     root = path.resolve()
-    cfg = load_config(root)
     graph_path = state_dir(root) / "plan" / "graph.json"
     history_path = graph_path.parent / "history.jsonl"
     durability = InterviewDurability(graph_path)
-    provider = get_provider(cfg)
     reporter = Reporter()
     graph: Graph | None = None
 
     try:
+        cfg = load_config(root)
+        provider = get_provider(cfg)
         if amend:
             graph = _load_graph(root, include_checkpoint=True)
             if not graph.is_stable():
@@ -239,6 +284,15 @@ def plan(
             if graph.interview is not None and graph.interview.pending_event is not None:
                 typer.echo(
                     "error: save the pending interview history with `plan --resume`", err=True
+                )
+                raise typer.Exit(1)
+            if (
+                graph.interview is not None
+                and graph.interview.planning is not None
+                and graph.interview.planning.phase != "approved"
+            ):
+                typer.echo(
+                    "error: approve the open plan first: `automagic plan --resume`", err=True
                 )
                 raise typer.Exit(1)
             graph.interview = None
@@ -273,28 +327,22 @@ def plan(
             cfg.max_rounds,
             on_progress=reporter.handle,
             durability=durability,
+            max_questions=cfg.max_questions,
+            confirm=lambda summary: planning_ui.confirm_plan(graph, root, summary),
+            continue_interview=lambda reason, summary: planning_ui.continue_plan(
+                graph, root, reason, summary, cfg.max_rounds
+            ),
+            repository_context=lambda: _repo_context(root, graph),
         )
         reporter.close()
         if not result.converged:
             checkpoint = graph.interview
-            if result.paused and checkpoint is not None:
-                invalid = set(graph.invalid())
-                left = sum(nid in invalid for nid in checkpoint.pending)
-                message = (
-                    f"Plan paused during interview pass {result.rounds}/{checkpoint.round_limit}; "
-                    f"{left} {'topic' if left == 1 else 'topics'} pending this pass; "
-                )
-            else:
-                message = (
-                    f"Plan unsettled: interview pass limit reached after pass {result.rounds}; "
-                    f"resume grants {cfg.max_rounds} more interview "
-                    f"{'pass' if cfg.max_rounds == 1 else 'passes'}; "
-                )
-            unsettled = len(graph.invalid())
+            if checkpoint is None or checkpoint.planning is None:
+                raise GraphError("Bounded interview returned without its saved position")
             typer.echo(
-                f"\n{message}"
-                f"{unsettled} {'topic' if unsettled == 1 else 'topics'} unsettled overall. "
-                "Continue with `automagic plan --resume`.",
+                "\nPlan saved but not approved. "
+                f"{checkpoint.planning.remaining} questions remaining. "
+                f"Resume with `{planning_ui.resume_command(root)}`.",
                 err=True,
             )
             raise typer.Exit(2)
@@ -303,11 +351,13 @@ def plan(
                 interview.split_node(graph, provider, nid, cfg.max_changed_lines)
         for nid in graph.nodes:
             graph.validate(nid)
+        if graph.interview is not None and graph.interview.planning is not None:
+            graph.interview.planning.approved_hash = graph.root_hash()
         durability.save(graph)
     except (KeyboardInterrupt, typer.Abort) as exc:
         typer.echo(
-            "\nPlanning interrupted. Continue from the last saved state "
-            "with `automagic plan --resume`."
+            "\nPlanning interrupted. Continue from the last saved state with "
+            f"`{planning_ui.resume_command(root)}`."
             if graph is not None
             and (graph_path.exists() or (plandocs.plan_dir(root) / "graph.json").exists())
             else "\nPlanning interrupted before the initial graph was saved.",
@@ -316,14 +366,33 @@ def plan(
         raise typer.Exit(1) from exc
     except (ProviderError, ValueError, OSError) as exc:
         reporter.close()
-        typer.echo(f"error: {exc}", err=True)
+        category = (
+            "provider failure"
+            if isinstance(exc, ProviderError)
+            else "filesystem failure"
+            if isinstance(exc, OSError)
+            else "invalid planning data or configuration"
+        )
+        typer.echo(f"error: {category}: {exc}", err=True)
+        typer.echo(
+            "Recovery: only successfully saved input is recoverable; "
+            "input that failed to save must be entered again. "
+            f"Fix the reported cause, then resume with `{planning_ui.resume_command(root)}`. "
+            "If no plan was saved, rerun with your goal. No automatic retry is performed.",
+            err=True,
+        )
         raise typer.Exit(1) from exc
     finally:
         reporter.close()
+    total_questions = (
+        graph.interview.planning.answered
+        if graph.interview is not None and graph.interview.planning is not None
+        else result.questions_asked
+    )
     typer.echo(
         f"\nPlanning settled after {result.rounds} interview "
         f"{'pass' if result.rounds == 1 else 'passes'}, "
-        f"{result.questions_asked} {'question' if result.questions_asked == 1 else 'questions'}."
+        f"{total_questions} {'question' if total_questions == 1 else 'questions'}."
     )
     _propose(root, create=create, yes=False)
 
