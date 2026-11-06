@@ -17,7 +17,9 @@ runner = CliRunner()
 
 @pytest.mark.parametrize("language", ["python", "typescript"])
 def test_init_creates_baseline_and_passes_own_check(tmp_path, language):
-    result = runner.invoke(app, ["init", "--path", str(tmp_path), "--language", language])
+    result = runner.invoke(
+        app, ["init", "--path", str(tmp_path), "--language", language, "--name", "Demo Project"]
+    )
     assert result.exit_code == 0, result.output
     next_steps = (
         "uv sync && uv run prek install && automagic check"
@@ -30,16 +32,41 @@ def test_init_creates_baseline_and_passes_own_check(tmp_path, language):
     for rel in (
         ".pre-commit-config.yaml",
         "AGENTS.md",
+        "GLOSSARY.md",
         ".github/copilot-instructions.md",
         "docs/adr/0001-record-architecture-decisions.md",
         ".github/skills/automagic-plan/SKILL.md",
         ".github/workflows/ci.yml",
     ):
         assert (tmp_path / rel).exists(), rel
+    glossary = (tmp_path / "GLOSSARY.md").read_text()
+    assert glossary.startswith("# Demo Project\n")
+    assert "## Language\n" in glossary
+    assert "created  GLOSSARY.md" in result.output
+    assert "[Glossary](../GLOSSARY.md)" in (tmp_path / "docs/CONTEXT.md").read_text()
     assert not (tmp_path / ".github/prompts").exists()
     assert ".github/prompts/" not in result.output
     assert guardrails.check(tmp_path, Config()) == []
     assert runner.invoke(app, ["check", "--path", str(tmp_path)]).exit_code == 0
+
+
+@pytest.mark.parametrize("language", ["python", "typescript"])
+@pytest.mark.parametrize("force", [False, True])
+def test_init_preserves_existing_glossary_unless_forced(tmp_path, language, force):
+    glossary = tmp_path / "GLOSSARY.md"
+    original = "# Existing domain\n\n## Language\n\n**Customer**:\nA buyer.\n"
+    glossary.write_text(original)
+    args = ["init", "--path", str(tmp_path), "--language", language, "--name", "Demo Project"]
+    if force:
+        args.append("--force")
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    status = "overwritten" if force else "skipped"
+    assert f"{status}  GLOSSARY.md" in result.output
+    if force:
+        assert glossary.read_text().startswith("# Demo Project\n")
+    else:
+        assert glossary.read_text() == original
 
 
 def test_slash_commands_only_generate_skills():
@@ -181,6 +208,7 @@ def test_init_dry_run_does_not_write_or_print_installation_steps(tmp_path, langu
     )
     assert result.exit_code == 0, result.output
     assert "would-create" in result.output
+    assert "would-create  GLOSSARY.md" in result.output
     assert "Next:" not in result.output
     assert not any(tmp_path.iterdir())
 

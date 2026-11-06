@@ -49,7 +49,7 @@ def init(
     force: Annotated[bool, typer.Option(help="Overwrite existing files.")] = False,
     dry_run: Annotated[bool, typer.Option(help="Show what would change.")] = False,
 ) -> None:
-    """Set up development tooling, pre-commit, ADRs, guardrails and slash commands."""
+    """Set up tooling, pre-commit, a glossary, ADRs, guardrails and slash commands."""
     root = path.resolve()
     language = language or _detect_language(root)
     if language is None:
