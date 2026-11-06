@@ -21,15 +21,25 @@ from automagic.merkle import (
 from automagic.progress import Phase, Progress
 from automagic.providers import Provider, ProviderError
 
+
+@dataclass(frozen=True)
+class InterviewCorrection:
+    text: str
+
+
 Ask = Callable[[str], str | None]
 Notify = Callable[[Graph], None]
 Event = Callable[[InterviewEvent], None]
 OnProgress = Callable[[Progress], None]
+Continue = Callable[[str, str], bool | InterviewCorrection]
 
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 SEED_PROMPT = """You are a planning agent. Decompose the goal into a graph of assumptions and
 decisions that must hold for the work to succeed. Each node is small and concrete.
+Start with intended outcomes, users, scope boundaries, constraints and observable success.
+Drafts and suggestions are NOT agreed decisions. Label uncertainty; do not invent requirements
+or APIs. Avoid speculative features. Use repository facts below rather than ask users for them.
 Reply with JSON only:
 {{"nodes": [{{"id": "kebab-id", "title": str, "content": str, "depends_on": [ids],
 "files": [repo paths likely touched], "est_lines": int}}]}}
@@ -92,6 +102,7 @@ class InterviewResult:
     converged: bool
     questions_asked: int
     paused: bool = False
+    stop_reason: str | None = None
 
 
 def parse_json(text: str) -> dict:
@@ -187,8 +198,29 @@ def run_interview(
     on_progress: OnProgress | None = None,
     *,
     durability: InterviewDurability | None = None,
+    max_questions: int | None = None,
+    confirm: Ask | None = None,
+    continue_interview: Continue | None = None,
+    repository_context: Callable[[], str] | None = None,
 ) -> InterviewResult:
-    """Continue the saved pass; only a question-free check validates a node."""
+    """Run bounded planning when given an allowance; retain the legacy topic-only API."""
+    if max_questions is not None or (graph.interview and graph.interview.planning):
+        from automagic.bounded_interview import run_bounded_interview
+
+        return run_bounded_interview(
+            graph,
+            provider,
+            ask,
+            max_rounds,
+            max_questions,
+            durability=durability,
+            on_change=on_change,
+            on_event=on_event,
+            confirm=confirm,
+            continue_interview=continue_interview,
+            repository_context=repository_context,
+            on_progress=on_progress,
+        )
     if max_rounds <= 0:
         raise ValueError("max_rounds must be positive")
     if durability is not None and (on_change is not None or on_event is not None):

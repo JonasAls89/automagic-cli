@@ -13,7 +13,7 @@ from automagic.config import Config
 from automagic.interview import parse_json
 from automagic.merkle import Graph
 from automagic.providers import Provider, ProviderError
-from automagic.runner import BRIEF_PATH, git
+from automagic.runner import BRIEF_PATH, RunError, git, untracked_files, worktree_diff
 from automagic.sizing import WorkItem
 from automagic.worktrees import Proposal
 
@@ -119,13 +119,18 @@ def _in_scope(path: str, declared: list[str]) -> bool:
     )
 
 
-def _numstat(path: Path, base: str, branch: str) -> list[tuple[str, int]]:
-    result = git(["diff", "--numstat", f"{base}..{branch}"], path)
-    if result.returncode != 0:
-        raise ReviewError(f"git diff failed: {result.stderr.strip()}")
+def _numstat(path: Path, base: str) -> list[tuple[str, int]]:
+    try:
+        output = worktree_diff(path, base, numstat=True)
+    except RunError as exc:
+        raise ReviewError(str(exc)) from exc
     rows = []
-    for line in result.stdout.splitlines():
+    fields = iter(output.split("\0"))
+    for line in filter(None, fields):
         added, deleted, name = line.split("\t", 2)
+        if not name:
+            next(fields)
+            name = next(fields)
         rows.append((name, int(added) + int(deleted) if added.isdigit() else 0))
     return rows
 
@@ -140,7 +145,7 @@ def collect(
     if not prop.path.is_dir():
         raise ReviewError(f"Worktree {prop.path} does not exist; run `automagic run` first")
     review = Review(prop.item, prop.branch, prop.path, base)
-    rows = _numstat(prop.path, base, prop.branch)
+    rows = _numstat(prop.path, base)
     review.files = [name for name, _ in rows]
     review.lines = sum(n for _, n in rows)
     log = git(["log", "--format=%s", f"{base}..{prop.branch}"], prop.path)
@@ -152,11 +157,7 @@ def collect(
             WARN, "plan", "The plan changed since this work item was run; scope may be stale"
         )
     if not review.files:
-        review.add(ERROR, "scope", "No committed changes relative to the base")
-    if git(
-        ["status", "--porcelain", "--", ".", f":(exclude){BRIEF_PATH}"], prop.path
-    ).stdout.strip():
-        review.add(WARN, "scope", "Uncommitted changes exist in the worktree and are not reviewed")
+        review.add(ERROR, "scope", "No changes relative to the base")
     merges = git(["log", "--merges", "--format=%s", f"{base}..{prop.branch}"], prop.path)
     if merges.stdout.strip():
         review.add(WARN, "scope", "The agent created merge commits")
@@ -216,6 +217,13 @@ def verify(review: Review, cfg: Config) -> None:
     if not cfg.verify_command.strip():
         return
     cmd = shlex.split(cfg.verify_command)
+    if cmd == ["prek", "run", "--all-files"] and untracked_files(review.path):
+        review.add(
+            WARN,
+            "verify",
+            "prek run --all-files skips untracked files; stage new files and rerun verification. "
+            "They are included in scope, size and AI review without staging.",
+        )
     try:
         result = subprocess.run(  # noqa: S603  # nosec B603
             cmd,
@@ -241,7 +249,7 @@ def ai_review(graph: Graph, review: Review, provider: Provider, cfg: Config) -> 
     )
     rules = review.path / "docs" / "GUARDRAILS.md"
     rules_text = rules.read_text()[: cfg.max_instruction_bytes] if rules.exists() else "(none)"
-    diff = git(["diff", f"{review.base}..{review.branch}"], review.path).stdout
+    diff = worktree_diff(review.path, review.base)
     budget = max(cfg.max_context_tokens * 4 // 2, 1_000)
     truncated = len(diff) > budget
     prompt = AI_PROMPT.format(
@@ -274,7 +282,8 @@ def render(review: Review) -> str:
         f"Verdict: **{review.verdict}**",
         f"Branch: `{review.branch}`",
         f"Worktree: `{review.path}`",
-        f"Diff: `{review.base}..{review.branch}` ({len(review.files)} files, "
+        f"Diff: `{review.base}` to working tree, including uncommitted files "
+        f"({len(review.files)} files, "
         f"{review.lines} changed lines, {len(review.commits)} commits)",
         f"Planning topics: {', '.join(review.item.node_ids)}",
         "",

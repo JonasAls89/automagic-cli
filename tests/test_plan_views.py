@@ -2,7 +2,8 @@ import json
 from pathlib import Path
 
 import pytest
-from test_runner import CHAIN, WRITE, configure, make_repo
+from test_bounded_interview import assessment
+from test_runner import CHAIN, WRITE, commit_file, configure, make_repo
 from typer.testing import CliRunner
 
 from automagic import guardrails, plandocs
@@ -42,14 +43,25 @@ def test_run_only_runs_subset_then_the_rest(tmp_path):
     configure(repo, WRITE)
     first = runner.invoke(app, ["run", "--path", str(repo), "--yes", "--only", "wi-02"])
     assert first.exit_code == 0, first.output
-    assert "wi-01: done" in first.output and "wi-02: done" in first.output
+    assert "wi-01: done" in first.output and "wi-02 [pending]" in first.output
     assert "wi-03" not in first.output and "wi-04" not in first.output
     state = RunState.load(repo / ".automagic" / "plan" / "run.json")
     assert state.items["wi-03"].status == "pending"
+    commit_file(Path(state.items["wi-01"].path), "wi-01.txt", "x\n")
+    resumed = runner.invoke(app, ["run", "--path", str(repo), "--yes", "--only", "wi-02"])
+    assert resumed.exit_code == 0, resumed.output
+    assert "wi-02: done" in resumed.output and "wi-03: running" not in resumed.output
+    state = RunState.load(repo / ".automagic" / "plan" / "run.json")
+    commit_file(Path(state.items["wi-02"].path), "wi-02.txt", "x\n")
     rest = runner.invoke(app, ["run", "--path", str(repo), "--yes", "--only", "d"])
     assert rest.exit_code == 0, rest.output
-    assert "wi-03: done" in rest.output and "wi-04: done" in rest.output
+    assert "wi-03: done" in rest.output and "wi-04 [pending]" in rest.output
     assert "wi-01: running" not in rest.output
+    state = RunState.load(repo / ".automagic" / "plan" / "run.json")
+    commit_file(Path(state.items["wi-03"].path), "wi-03.txt", "x\n")
+    last = runner.invoke(app, ["run", "--path", str(repo), "--yes", "--only", "d"])
+    assert last.exit_code == 0, last.output
+    assert "wi-04: done" in last.output and "wi-02: running" not in last.output
     nothing = runner.invoke(app, ["run", "--path", str(repo), "--yes", "--only", "wi-04"])
     assert "nothing to run" in nothing.output
 
@@ -304,10 +316,14 @@ def test_plan_amend_cli_revalidates_and_logs(tmp_path, monkeypatch, legacy_conte
     def reply(prompt: str) -> str:
         if prompt.startswith("You maintain an agreed plan"):
             return json.dumps({"edits": [{"id": "a", "content": "do a differently"}]})
-        return json.dumps({"question": None})
+        return assessment(settled=["a", "b", "c", "d"], ready=True)
 
     monkeypatch.setattr("automagic.cli.get_provider", lambda cfg: FakeProvider(reply))
-    out = runner.invoke(app, ["plan", "--amend", "change a", "--path", str(repo), "--no-create"])
+    out = runner.invoke(
+        app,
+        ["plan", "--amend", "change a", "--path", str(repo), "--no-create"],
+        input="/approve\n",
+    )
     assert out.exit_code == 0, out.output
     assert "Edited planning topics: a" in out.output
     assert "New planning topics: -" in out.output

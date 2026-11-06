@@ -3,6 +3,7 @@ from io import StringIO
 
 import pytest
 from rich.console import Console
+from test_bounded_interview import assessment, question
 from test_planning import SEED, scripted
 from test_runner import CHAIN, make_repo
 from typer.testing import CliRunner
@@ -299,28 +300,38 @@ def stale_repo(tmp_path):
 def test_plan_cli_shows_progress_and_what_the_answer_reopened(tmp_path, monkeypatch):
     repo = stale_repo(tmp_path)
     title = Graph.load(repo / ".automagic" / "plan" / "graph.json").nodes["a"].title
-    provider = scripted([], {"a": ["Which approach?"]})
+    item = question("a")
+    item["question"] = "Which approach?"
+    provider = FakeProvider(
+        [
+            assessment(questions=[item]),
+            '{"content":"a revised","resolved":true}',
+            assessment(settled=["a", "b", "c", "d"], ready=True),
+        ]
+    )
     monkeypatch.setattr("automagic.cli.get_provider", lambda cfg: provider)
     out = runner.invoke(
-        app, ["plan", "--resume", "--path", str(repo), "--no-create"], input="my answer\n"
+        app,
+        ["plan", "--resume", "--path", str(repo), "--no-create"],
+        input="y\nmy answer\n/approve\n",
     )
     assert out.exit_code == 0, out.output
     line = "3/4 topics settled · pass 1/8\n1 topic pending this pass · 1 unsettled overall"
     assert line in out.output
     assert out.output.index(line) < out.output.index(f'Topic: "{title}"')
-    assert out.output.index(f'Topic: "{title}"') < out.output.index("? Which approach?")
+    assert out.output.index(f'Topic: "{title}"') < out.output.index("Which approach?")
     assert "answer applied: 3 settled topics re-opened" in out.output
-    assert "Planning settled after 2 interview passes, 1 question." in out.output
+    assert "Planning settled after 1 interview pass, 1 question." in out.output
 
 
 def test_plan_cli_stopping_early_still_reports_progress(tmp_path, monkeypatch):
     repo = stale_repo(tmp_path)
-    provider = scripted([], {"a": ["Which approach?"]})
+    provider = FakeProvider([assessment(questions=[question("a")])])
     monkeypatch.setattr("automagic.cli.get_provider", lambda cfg: provider)
     out = runner.invoke(
-        app, ["plan", "--resume", "--path", str(repo), "--no-create"], input="/done\n"
+        app, ["plan", "--resume", "--path", str(repo), "--no-create"], input="y\n/done\n"
     )
     assert out.exit_code == 2
     assert "3/4 topics settled" in out.output
-    assert "Plan paused during interview pass 1/8" in out.output
+    assert "Plan saved but not approved" in out.output
     assert "1 topic pending this pass" in out.output

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shlex
 import subprocess  # nosec B404
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -22,9 +24,9 @@ BRIEF_PATH = ".automagic/BRIEF.md"
 
 PROMPT = (
     "Read .automagic/BRIEF.md and AGENTS.md (if present). Implement only the work item "
-    "described in the brief; do not expand scope. Run the project's quality gates, then commit "
-    "your work to the current branch with git commit. Do not push, merge, rebase or switch "
-    "branches."
+    "described in the brief; do not expand scope. Run the project's quality gates, then leave "
+    "your changes in the worktree for human review and commit grouping. Preserve existing "
+    "staging. Do not stage, commit, push, merge, rebase or switch branches."
 )
 
 
@@ -115,6 +117,51 @@ def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def needs_manual_commit(path: Path, base: str) -> bool:
+    """Require clean prerequisites with committed changes, ignoring the generated brief."""
+    if not path.is_dir():
+        raise RunError(f"Worktree {path} does not exist")
+    result = git(
+        ["status", "--porcelain", "--untracked-files=all", "--", ".", f":(exclude){BRIEF_PATH}"],
+        path,
+    )
+    if result.returncode != 0:
+        raise RunError(f"git status failed: {result.stderr.strip()}")
+    if result.stdout.strip():
+        return True
+    committed = git(["diff", "--quiet", base, "HEAD"], path)
+    if committed.returncode not in (0, 1):
+        raise RunError(f"git diff failed: {committed.stderr.strip()}")
+    return committed.returncode == 0
+
+
+def untracked_files(path: Path) -> list[str]:
+    result = git(
+        ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", f":(exclude){BRIEF_PATH}"],
+        path,
+    )
+    if result.returncode != 0:
+        raise RunError(f"git ls-files failed: {result.stderr.strip()}")
+    return list(filter(None, result.stdout.split("\0")))
+
+
+def worktree_diff(path: Path, base: str, *, numstat: bool = False) -> str:
+    """Diff all current work from a base without modifying the real index."""
+    flags = ["--no-ext-diff", "--no-renames"]
+    if numstat:
+        flags += ["--numstat", "-z"]
+    tracked = git(["diff", *flags, base, "--"], path)
+    if tracked.returncode != 0:
+        raise RunError(f"git diff failed: {tracked.stderr.strip()}")
+    chunks = [tracked.stdout]
+    for name in untracked_files(path):
+        result = git(["diff", "--no-index", *flags, "--", os.devnull, name], path)
+        if result.returncode not in (0, 1):
+            raise RunError(f"git diff failed for {name}: {result.stderr.strip()}")
+        chunks.append(result.stdout)
+    return "".join(chunks)
+
+
 def waves(items: list[WorkItem]) -> list[list[str]]:
     """Dependency waves assuming every item succeeds."""
     done: set[str] = set()
@@ -154,6 +201,34 @@ def select(items: list[WorkItem], only: list[str], done: set[str]) -> set[str]:
     return chosen
 
 
+@dataclass(frozen=True)
+class RunPreparation:
+    selected: set[str] | None
+    waves: list[list[str]]
+
+
+def prepare_run(
+    graph: Graph,
+    items: list[WorkItem],
+    state_path: Path,
+    *,
+    only: list[str] | None = None,
+    restart: bool = False,
+) -> RunPreparation:
+    """Prepare selection and preview waves without changing items or saved state."""
+    selected = None
+    if only is not None:
+        saved = RunState.load(state_path) if not restart and state_path.exists() else None
+        done = finished(graph, items, saved) if saved else set()
+        selected = select(items, only, done)
+    scoped = [
+        replace(item, depends_on=[d for d in item.depends_on if selected is None or d in selected])
+        for item in items
+        if selected is None or item.id in selected
+    ]
+    return RunPreparation(selected, waves(scoped))
+
+
 def agent_command(cfg: Config, prompt: str = PROMPT) -> list[str]:
     parts = shlex.split(cfg.runner_command)
     if not any("{prompt}" in p for p in parts):
@@ -191,16 +266,6 @@ def prepare_worktree(
     brief_file.write_text(brief(graph, prop, items))
 
 
-def _commit_all(path: Path, message: str) -> bool:
-    git(["add", "-A", "--", ".", f":(exclude){BRIEF_PATH}"], path)
-    if git(["diff", "--cached", "--quiet"], path).returncode == 0:
-        return False
-    result = git(["commit", "--no-verify", "-m", message], path)
-    if result.returncode != 0:
-        raise RunError(f"git commit failed: {result.stderr.strip()}")
-    return True
-
-
 def _run_logged(cmd: list[str], cwd: Path, log: Path, timeout: int) -> int:
     with log.open("a") as fh:
         fh.write(f"$ {shlex.join(cmd)}\n")
@@ -217,30 +282,28 @@ def _run_logged(cmd: list[str], cwd: Path, log: Path, timeout: int) -> int:
             return 127
 
 
-def _has_changes(path: Path, base: str) -> bool:
-    """True if HEAD differs from `base`; unknown or unreadable bases never fail an item."""
-    return not base or git(["diff", "--quiet", base, "HEAD"], path).returncode != 0
-
-
 def execute(prop: Proposal, cfg: Config, log: Path, base: str = "") -> tuple[str, str]:
-    """Run the agent, commit its work, then gate on the verify command. Returns (status, detail)."""
+    """Run and verify the agent's work, leaving commits to the user."""
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("")
     code = _run_logged(agent_command(cfg), prop.path, log, cfg.agent_timeout)
     if code != 0:
         return FAILED, f"agent exited with {code}"
     try:
-        _commit_all(prop.path, f"{prop.item.id}: implement work item")
-        if not _has_changes(prop.path, base):
+        diff = worktree_diff(prop.path, base or "HEAD")
+        if not diff:
             return FAILED, "agent made no changes"
         if cfg.verify_command.strip():
             verify = shlex.split(cfg.verify_command)
             code = _run_logged(verify, prop.path, log, cfg.agent_timeout)
-            # Formatters fix files and fail the first run; commit the fixes and check again.
-            if code != 0 and _commit_all(prop.path, f"{prop.item.id}: apply automatic fixes"):
+            fixed = worktree_diff(prop.path, base or "HEAD")
+            if code != 0 and fixed != diff:
                 code = _run_logged(verify, prop.path, log, cfg.agent_timeout)
+                fixed = worktree_diff(prop.path, base or "HEAD")
             if code != 0:
                 return FAILED, f"verification failed ({cfg.verify_command})"
+            if not fixed:
+                return FAILED, "agent made no changes"
     except RunError as exc:
         return FAILED, str(exc)
     return DONE, ""
@@ -294,11 +357,26 @@ def run_plan(
             futures = {}
             if not ready:
                 break
+            progressed = False
             for item in ready:
                 prop = by_id[item.id]
                 try:
+                    waiting = [
+                        d
+                        for d in item.depends_on
+                        if needs_manual_commit(by_id[d].path, state.items[d].base)
+                    ]
+                    if waiting:
+                        update(
+                            item.id,
+                            PENDING,
+                            f"waiting for manual commits in prerequisites: {', '.join(waiting)}",
+                        )
+                        continue
+                    progressed = True
                     prepare_worktree(graph, prop, items, by_id, repo)
                 except RunError as exc:
+                    progressed = True
                     update(item.id, FAILED, str(exc))
                     continue
                 if not state.items[item.id].base:
@@ -315,4 +393,6 @@ def run_plan(
                 except Exception as exc:  # agent failures must not stop other items
                     status, detail = FAILED, f"unexpected error: {exc}"
                 update(item_id, status, detail)
+            if not progressed:
+                break
     return state
