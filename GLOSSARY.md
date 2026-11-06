@@ -26,3 +26,14 @@ The derived representation of agreed planning topics and their work-item
 breakdown for readers.
 See [plan publication](src/automagic/publication.py) and
 [plan presentation](src/automagic/cli.py).
+
+**Work-item run preparation**:
+The determination of a run's work-item scope and prerequisite ordering.
+See [work-item selection](src/automagic/runner.py) and
+[run preparation](src/automagic/cli.py).
+
+**Run preview**:
+A presentation of a run's work-item scope and prerequisite ordering, not a
+guaranteed execution schedule.
+See [run presentation](src/automagic/cli.py) and
+[work-item execution](src/automagic/runner.py).
