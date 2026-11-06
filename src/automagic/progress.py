@@ -17,7 +17,7 @@ from rich.text import Text
 
 BAR_WIDTH = 20
 
-Phase = Literal["checking", "settled", "asking", "revising", "revised"]
+Phase = Literal["checking", "settled", "asking", "revising", "revised", "waiting"]
 
 
 @dataclass(frozen=True)
@@ -78,7 +78,9 @@ class Reporter:
         self._status: Status | None = None
 
     def handle(self, p: Progress) -> None:
-        if p.phase == "asking":
+        if p.phase == "waiting":
+            self._stop()
+        elif p.phase == "asking":
             self._stop()
             self._print(summary(p))
             self._print(f'Topic: "{p.node_title}"')

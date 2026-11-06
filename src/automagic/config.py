@@ -24,6 +24,7 @@ class Config(BaseModel):
     max_context_tokens: int = Field(default=40_000, gt=0)
     max_changed_lines: int = Field(default=400, gt=0)
     max_rounds: int = Field(default=8, gt=0)
+    max_questions: int = Field(default=12, ge=0)
     max_instruction_bytes: int = Field(default=8_000, gt=0)
     runner_command: str = DEFAULT_RUNNER
     verify_command: str = "prek run --all-files"

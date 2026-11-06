@@ -17,6 +17,8 @@ from typing import Literal, Self, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from automagic.planning_state import PlanningState
+
 
 class ValidatedEvent(TypedDict):
     id: str
@@ -53,6 +55,7 @@ class InterviewCheckpoint(BaseModel):
     answer: str | None = None
     graph_hash: str
     pending_event: InterviewEvent | None = None
+    planning: PlanningState | None = None
 
     @model_validator(mode="after")
     def consistent_phase(self) -> Self:
@@ -66,6 +69,10 @@ class InterviewCheckpoint(BaseModel):
             raise ValueError("A completed interview step still contains a question")
         if self.pending_event is not None and self.phase != "checking":
             raise ValueError("An interview event cannot precede a completed step")
+        if self.planning is not None and (
+            self.phase != "checking" or self.pending or self.question or self.answer
+        ):
+            raise ValueError("Bounded and legacy interview positions cannot be combined")
         return self
 
 
@@ -170,6 +177,14 @@ class Graph(BaseModel):
         ):
             raise GraphError("Saved interview checkpoint does not match the graph")
         event = checkpoint.pending_event
+        planning = checkpoint.planning
+        if planning is not None and (
+            any(q.node not in self.nodes for q in planning.batch)
+            or any(nid not in self.nodes for nid in planning.pending_validations)
+            or (planning.phase in {"confirming", "approved"} and not self.is_stable())
+            or (planning.phase == "approved" and planning.approved_hash != self.root_hash())
+        ):
+            raise GraphError("Saved planning interview does not match the graph")
         if event is not None:
             expected = event["hash"] if event["event"] == "validated" else event["new_hash"]
             if (
