@@ -378,7 +378,7 @@ def run(
         ),
     ] = None,
 ) -> None:
-    """Run one agent per work item in its worktree, in dependency waves. Never pushes or merges."""
+    """Run and verify work items in dependency waves. Leave changes uncommitted for review."""
     root = path.resolve()
     cfg = load_config(root)
     if max_concurrency:
@@ -453,11 +453,16 @@ def run(
         selected,
     )
     shown = [i for i in items if selected is None or i.id in selected]
-    typer.echo("\nReview each branch, then merge it yourself:")
+    typer.echo("\nReview each branch, then commit and merge it yourself:")
     for item in shown:
         r = state.items[item.id]
         typer.echo(f"  {item.id} [{r.status}] {r.branch}  {r.detail}".rstrip())
-    if any(state.items[i.id].status != runner.DONE for i in shown):
+    if any(state.items[i.id].status == runner.PENDING for i in shown):
+        typer.echo(
+            "Waiting for prerequisites: review with `automagic review <id> --verify`, "
+            "commit their changes, then re-run `automagic run` to resume."
+        )
+    if any(state.items[i.id].status in (runner.FAILED, runner.BLOCKED) for i in shown):
         typer.echo(
             "Re-run `automagic run` to retry failed items; logs are in .automagic/plan/runs/"
         )
@@ -494,6 +499,11 @@ def review(
             or (recorded.base if recorded else "")
             or review_mod.default_base(prop, {p.item.id: p for p in props}, repo)
         )
+        verification_findings: list[review_mod.Finding] = []
+        if verify:
+            checks = review_mod.Review(prop.item, prop.branch, prop.path, base_ref)
+            review_mod.verify(checks, cfg)
+            verification_findings = checks.findings
         result = review_mod.collect(
             graph,
             prop,
@@ -501,8 +511,7 @@ def review(
             cfg,
             plan_changed=bool(state and state.root_hash != graph.root_hash()),
         )
-        if verify:
-            review_mod.verify(result, cfg)
+        result.findings.extend(verification_findings)
         if ai:
             review_mod.ai_review(graph, result, get_provider(cfg), cfg)
     except (review_mod.ReviewError, RuntimeError, ValueError) as exc:

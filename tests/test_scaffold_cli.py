@@ -82,6 +82,12 @@ def test_plan_skills_present_terminal_output_and_match_checked_in(command):
     assert (Path(__file__).resolve().parents[1] / relative).read_text() == content
 
 
+@pytest.mark.parametrize("command", ["run", "review"])
+def test_execution_skills_match_checked_in(command):
+    relative = f".github/skills/automagic-{command}/SKILL.md"
+    assert (Path(__file__).resolve().parents[1] / relative).read_text() == slash_files()[relative]
+
+
 @pytest.mark.parametrize("force", [False, True])
 def test_scaffold_leaves_existing_prompts_untouched(tmp_path, force):
     path = tmp_path / ".github/prompts/automagic-plan.prompt.md"

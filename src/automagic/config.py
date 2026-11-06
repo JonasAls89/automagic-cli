@@ -11,10 +11,10 @@ from pydantic import BaseModel, Field
 STATE_DIR = ".automagic"
 
 # {prompt} is replaced by the agent prompt. Agents may edit files and run shell commands in
-# their own worktree; pushing and merging are denied.
+# their own worktree; committing, pushing and merging are denied.
 DEFAULT_RUNNER = (
     "copilot -p {prompt} -s --no-ask-user --allow-tool=write --allow-tool=shell "
-    "'--deny-tool=shell(git push)' '--deny-tool=shell(git merge)'"
+    "'--deny-tool=shell(git commit)' '--deny-tool=shell(git push)' '--deny-tool=shell(git merge)'"
 )
 
 

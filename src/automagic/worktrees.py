@@ -23,8 +23,41 @@ class Proposal:
         return ["git", "worktree", "add", "-b", self.branch, str(self.path), self.base]
 
 
-def _slug(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40] or "work"
+def _slug(text: str, max_length: int = 40) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:max_length] or "work"
+
+
+def _category(text: str) -> str:
+    if re.search(
+        r"\b(refactor\w*|restructur\w*|reorganiz\w*|modulariz\w*|decoupl\w*|simplif\w*)\b",
+        text,
+        re.I,
+    ):
+        return "refactor"
+    if re.search(
+        r"\b(chore|maintenan\w*|document\w*|docs|dependenc\w*|tooling|format\w*|lint\w*|"
+        r"test\w*|clean\w*|housekeep\w*|packag\w*|release)\b",
+        text,
+        re.I,
+    ):
+        return "chore"
+    return "feature"
+
+
+def _branch_name(graph: Graph, item: WorkItem) -> str:
+    nodes = [graph.nodes[nid] for nid in item.node_ids]
+    primary = nodes[0]
+    action = re.match(
+        r"^(?:add|build|create|implement|introduce|improve|update|refactor|restructure|"
+        r"reorganize|modularize|decouple|simplify|document|maintain|bump|upgrade|fix)"
+        r"\s+(?:(?:a|an|the|new)\s+)?(.+)$",
+        primary.title,
+        flags=re.I,
+    )
+    title = action.group(1) if action else primary.title
+    intent = _slug(title or primary.content, 32).rstrip("-") or "work"
+    titles = " ".join(node.title for node in nodes)
+    return f"{_category(titles)}/{item.id}_{intent}"
 
 
 def git_root(start: Path) -> Path:
@@ -54,13 +87,14 @@ def is_dirty(repo: Path) -> bool:
 def propose(graph: Graph, items: list[WorkItem], repo: Path) -> list[Proposal]:
     base = repo.parent / f"{repo.name}.worktrees"
     goal = _slug(graph.goal)
+    branches = {item.id: _branch_name(graph, item) for item in items}
     return [
         Proposal(
             item=item,
-            branch=f"automagic/{goal}/{item.id}",
+            branch=branches[item.id],
             path=base / f"{goal}-{item.id}",
             # Like `automagic run`: dependents start from their first prerequisite's branch.
-            base=f"automagic/{goal}/{item.depends_on[0]}" if item.depends_on else "HEAD",
+            base=branches[item.depends_on[0]] if item.depends_on else "HEAD",
         )
         for item in items
     ]

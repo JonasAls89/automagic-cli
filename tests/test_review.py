@@ -1,8 +1,9 @@
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
-from test_runner import WRITE, configure, make_repo
+from test_runner import WRITE, configure, make_repo, run_all
 from typer.testing import CliRunner
 
 from automagic import review as rv
@@ -10,7 +11,7 @@ from automagic.cli import app
 from automagic.config import Config
 from automagic.merkle import Graph, Node
 from automagic.providers import FakeProvider, ProviderError
-from automagic.runner import RunState
+from automagic.runner import RunState, git
 from automagic.sizing import WorkItem
 
 runner = CliRunner()
@@ -28,11 +29,6 @@ def nodes(**declared: list[str]) -> list[Node]:
             files=declared.get("b", []),
         ),
     ]
-
-
-def run_all(repo: Path) -> None:
-    out = runner.invoke(app, ["run", "--path", str(repo), "--yes"])
-    assert out.exit_code == 0, out.output
 
 
 def review(repo: Path, *args: str):
@@ -59,7 +55,7 @@ def test_node_id_target_and_branch_target_resolve_to_the_work_item(tmp_path):
     configure(repo, WRITE)
     run_all(repo)
     assert "# Review: wi-02" in review(repo, "b").output
-    assert "# Review: wi-01" in review(repo, "automagic/demo/wi-01").output
+    assert "# Review: wi-01" in review(repo, "feature/wi-01_a").output
     bad = review(repo, "nope")
     assert bad.exit_code == 1 and "not a work item" in bad.output
 
@@ -161,7 +157,7 @@ def test_ai_review_adds_findings_and_commit_message(tmp_path, monkeypatch):
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "GUARDRAILS.md").write_text("rules")
     graph, result = _prop(tmp_path)
-    monkeypatch.setattr(rv, "git", lambda args, cwd: type("R", (), {"stdout": "diff text"})())
+    monkeypatch.setattr(rv, "worktree_diff", lambda *args: "diff text")
     reply = {
         "findings": [
             {"severity": "error", "file": "x.py", "message": "invented API"},
@@ -176,7 +172,7 @@ def test_ai_review_adds_findings_and_commit_message(tmp_path, monkeypatch):
 
 def test_ai_review_failure_is_a_warning_not_a_crash(tmp_path, monkeypatch):
     graph, result = _prop(tmp_path)
-    monkeypatch.setattr(rv, "git", lambda args, cwd: type("R", (), {"stdout": "d"})())
+    monkeypatch.setattr(rv, "worktree_diff", lambda *args: "d")
 
     class Broken:
         def complete(self, prompt: str) -> str:
@@ -191,3 +187,106 @@ def test_propose_message_is_capped_and_lists_nodes():
     long = [Node(id=f"n{i}", title="T" * 40, content="") for i in range(2)]
     message = rv.propose_message(item, long)
     assert len(message.splitlines()[0]) <= 72 and "(n1)" in message
+
+
+def test_review_verify_includes_staged_unstaged_and_untracked_work(tmp_path):
+    declared = ["wi-01.txt", "README.md", "staged.txt", "new.txt"]
+    repo = make_repo(tmp_path, [Node(id="a", title="A", content="x", files=declared)])
+    configure(repo, WRITE)
+    out = runner.invoke(app, ["run", "--path", str(repo), "--yes"])
+    assert out.exit_code == 0, out.output
+    path = Path(RunState.load(repo / ".automagic/plan/run.json").items["wi-01"].path)
+    (path / "README.md").write_text("changed\n")
+    (path / "staged.txt").write_text("staged\n")
+    assert git(["add", "staged.txt"], path).returncode == 0
+    (path / "new.txt").write_text("untracked\n")
+    before = git(["status", "--porcelain"], path).stdout
+    head = git(["rev-parse", "HEAD"], path).stdout
+    configure(repo, WRITE, "sh -c 'grep -q changed README.md && test -f new.txt'")
+
+    out = review(repo, "wi-01", "--verify")
+
+    assert out.exit_code == 0, out.output
+    assert "Verdict: **pass**" in out.output
+    assert "4 files, 5 changed lines" in out.output
+    assert "0 commits" in out.output
+    assert all(f"- `{name}`" in out.output for name in declared)
+    assert "not reviewed" not in out.output and ".automagic/BRIEF.md" not in out.output
+    assert git(["status", "--porcelain"], path).stdout == before
+    assert git(["rev-parse", "HEAD"], path).stdout == head
+
+
+def test_review_counts_files_after_verification_fixes(tmp_path):
+    repo = make_repo(tmp_path, [Node(id="a", title="A", content="x", files=["wi-01.txt"])])
+    configure(repo, WRITE)
+    run_all(repo)
+    configure(repo, WRITE, "sh -c 'printf \"fixed\\nextra\\n\" > wi-01.txt'")
+
+    out = review(repo, "wi-01", "--verify")
+
+    assert out.exit_code == 0, out.output
+    assert "1 files, 2 changed lines" in out.output
+
+
+@pytest.mark.parametrize(
+    ("name", "content", "lines"),
+    [("empty.txt", b"", 1), ("binary.dat", b"\0binary", 1), ("tab\tname.txt", b"text\n", 2)],
+)
+def test_review_handles_empty_binary_and_unusual_untracked_files(tmp_path, name, content, lines):
+    repo = make_repo(tmp_path, [Node(id="a", title="A", content="x", files=["wi-01.txt", name])])
+    configure(repo, WRITE)
+    out = runner.invoke(app, ["run", "--path", str(repo), "--yes"])
+    assert out.exit_code == 0, out.output
+    path = Path(RunState.load(repo / ".automagic/plan/run.json").items["wi-01"].path)
+    (path / name).write_bytes(content)
+
+    out = review(repo, "wi-01")
+
+    assert out.exit_code == 0, out.output
+    assert "Verdict: **pass**" in out.output
+    assert f"2 files, {lines} changed lines" in out.output
+    assert f"- `{name}`" in out.output
+
+
+def test_ai_review_includes_uncommitted_file_contents(tmp_path, monkeypatch):
+    repo = make_repo(
+        tmp_path, [Node(id="a", title="A", content="x", files=["wi-01.txt", "new.txt"])]
+    )
+    configure(repo, WRITE)
+    out = runner.invoke(app, ["run", "--path", str(repo), "--yes"])
+    assert out.exit_code == 0, out.output
+    path = Path(RunState.load(repo / ".automagic/plan/run.json").items["wi-01"].path)
+    (path / "new.txt").write_text("uncommitted implementation\n")
+    prompts = []
+
+    class Capture:
+        def complete(self, prompt: str) -> str:
+            prompts.append(prompt)
+            return '{"findings": [], "commit_message": "Implement A"}'
+
+    monkeypatch.setattr("automagic.cli.get_provider", lambda cfg: Capture())
+
+    out = review(repo, "wi-01", "--ai")
+
+    assert out.exit_code == 0, out.output
+    assert "Verdict: **pass**" in out.output
+    assert len(prompts) == 1
+    assert "+uncommitted implementation" in prompts[0] and "+x\n" in prompts[0]
+    assert ".automagic/BRIEF.md" not in prompts[0]
+
+
+@pytest.mark.parametrize("untracked", [[], ["new.txt"]])
+def test_default_verifier_surfaces_untracked_files_skipped_by_hooks(
+    tmp_path, monkeypatch, untracked
+):
+    _, result = _prop(tmp_path)
+    monkeypatch.setattr(rv, "untracked_files", lambda path: untracked)
+    monkeypatch.setattr(
+        rv.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess([], 0)
+    )
+
+    rv.verify(result, Config())
+
+    assert result.verdict == ("concerns" if untracked else "pass")
+    if untracked:
+        assert "stage new files" in result.findings[0].message
