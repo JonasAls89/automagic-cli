@@ -13,4 +13,4 @@ Domain language: [Glossary](../GLOSSARY.md).
 - [.github/copilot-instructions.md](../.github/copilot-instructions.md)
 <!-- automagic:context:end -->
 
-Operating contract and historical decisions: [Skills-first intent workflow](adr/0017-skills-first-intent-workflow.md).
+Current operating contract: [Current workflow only](adr/0018-current-workflow-only.md).

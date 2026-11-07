@@ -1,4 +1,5 @@
 import pytest
+import yaml
 
 from automagic import guardrails
 from automagic.config import Config
@@ -8,16 +9,45 @@ from scripts.helper import BUNDLE, main
 ASSETS = BUNDLE / "skills/init/assets"
 
 
-def test_init_is_markdown_only_and_idempotent(tmp_path, capsys):
+def test_init_creates_documentation_and_setup_configs_idempotently(tmp_path, capsys):
     assert main(["init", "--path", str(tmp_path), "--name", "Demo"]) == 0
-    assert "Next: /automagic:intent" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Next: /automagic:intent" in output
+    assert "pre-commit hooks and Dependabot ecosystems" in output
     files = {
         path.relative_to(tmp_path).as_posix(): path.read_bytes()
         for path in tmp_path.rglob("*")
         if path.is_file()
     }
-    assert len(files) == 8
-    assert all(name.endswith(".md") for name in files)
+    yaml_files = {
+        ".github/dependabot.yml",
+        ".github/zizmor.yml",
+        ".pre-commit-config.yaml",
+    }
+    assert len(files) == 11
+    assert {name for name in files if not name.endswith(".md")} == yaml_files
+    assert yaml.safe_load(files[".github/dependabot.yml"]) == {
+        "version": 2,
+        "updates": [
+            {
+                "package-ecosystem": "github-actions",
+                "directory": "/",
+                "schedule": {"interval": "weekly"},
+                "cooldown": {"default-days": 7},
+            }
+        ],
+    }
+    assert yaml.safe_load(files[".github/zizmor.yml"]) == {"rules": {}}
+    hooks = yaml.safe_load(files[".pre-commit-config.yaml"])["repos"]
+    configured_hooks = yaml.safe_load((BUNDLE / ".pre-commit-config.yaml").read_text())["repos"]
+    assert hooks == [
+        next(repo for repo in configured_hooks if repo["repo"] == name)
+        for name in (
+            "https://github.com/pre-commit/pre-commit-hooks",
+            "https://github.com/zizmorcore/zizmor-pre-commit",
+        )
+    ]
+    assert any(hook["id"] == "zizmor" for repo in hooks for hook in repo["hooks"])
     assert not (tmp_path / "INTENT.md").exists()
     assert not (tmp_path / ".github/skills").exists()
     assert not (tmp_path / ".automagic").exists()
@@ -31,11 +61,8 @@ def test_init_is_markdown_only_and_idempotent(tmp_path, capsys):
 @pytest.mark.parametrize("force", [False, True])
 def test_existing_files_and_tooling_are_preserved(tmp_path, force):
     (tmp_path / "GLOSSARY.md").write_text("# Custom\n")
-    for name in ("pyproject.toml", "uv.lock", ".pre-commit-config.yaml"):
+    for name in ("pyproject.toml", "uv.lock"):
         (tmp_path / name).write_text("owned by the user")
-    old = tmp_path / ".automagic/plan/graph.json"
-    old.parent.mkdir(parents=True)
-    old.write_text("legacy graph")
     args = ["init", "--path", str(tmp_path)]
     if force:
         args.append("--force")
@@ -45,21 +72,34 @@ def test_existing_files_and_tooling_are_preserved(tmp_path, force):
         if force
         else "# Custom\n"
     )
-    assert old.read_text() == "legacy graph"
-    for name in ("pyproject.toml", "uv.lock", ".pre-commit-config.yaml"):
+    for name in ("pyproject.toml", "uv.lock"):
         assert (tmp_path / name).read_text() == "owned by the user"
 
 
-def test_dry_run_and_legacy_notice(tmp_path, capsys):
-    old = tmp_path / ".github/skills/automagic-plan/SKILL.md"
-    old.parent.mkdir(parents=True)
-    old.write_text("user-owned old skill")
+@pytest.mark.parametrize("force", [False, True])
+def test_setup_configs_are_preserved_unless_explicitly_forced(tmp_path, force):
+    names = (".github/dependabot.yml", ".github/zizmor.yml", ".pre-commit-config.yaml")
+    original = b"# User-owned configuration\n"
+    for name in names:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(original)
+    args = ["init", "--path", str(tmp_path)]
+    if force:
+        args.append("--force")
+    assert main(args) == 0
+    for name in names:
+        assert (tmp_path / name).read_bytes() == (
+            (ASSETS / name).read_bytes() if force else original
+        )
+
+
+def test_dry_run_has_no_writes(tmp_path):
     assert main(["init", "--path", str(tmp_path), "--dry-run"]) == 0
-    assert not (tmp_path / "AGENTS.md").exists()
-    assert old.read_text() == "user-owned old skill"
-    assert "not upgraded" in capsys.readouterr().out
+    assert list(tmp_path.iterdir()) == []
     actions = scaffold(tmp_path, "Demo", ASSETS, force=True, dry_run=True)
     assert all(action.status.startswith("would-") for action in actions)
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_context_preserves_surrounding_text_and_indexes_intent(tmp_path):
@@ -152,6 +192,16 @@ def test_scaffold_asset_and_path_errors(tmp_path):
     (target / "nested").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
     with pytest.raises(ValueError, match="outside project"):
         scaffold(target, "Demo", assets)
+
+
+def test_scaffold_rejects_yaml_outside_the_setup_surface(tmp_path):
+    assets = tmp_path / "assets"
+    workflow = assets / ".github/workflows/ci.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("name: unrelated workflow\n")
+    with pytest.raises(ValueError, match="approved setup YAML"):
+        scaffold(tmp_path / "target", "Demo", assets)
+    assert not (tmp_path / "target").exists()
 
 
 def test_readonly_context_without_index(tmp_path):

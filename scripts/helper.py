@@ -94,11 +94,10 @@ def main(argv: list[str] | None = None) -> int:
             if not args.dry_run:
                 guardrails.update_index(root)
                 validate(root, cfg)
-            for name in ("automagic-plan", "automagic-show", "automagic-review", "automagic-check"):
-                if (root / ".github/skills" / name).exists():
-                    print(
-                        f"warning: legacy workspace skill {name} was left untouched; not upgraded"
-                    )
+            print(
+                "Setup: tailor pre-commit hooks and Dependabot ecosystems "
+                "to the language/framework."
+            )
             print("Next: /automagic:intent, then /mattpocock-skills:grill-with-docs")
             return 0
         if args.action == "context":
