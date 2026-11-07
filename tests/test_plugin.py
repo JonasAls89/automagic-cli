@@ -5,6 +5,8 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import yaml
+
 from automagic.config import Config
 from automagic.guardrails import _links, check
 from scripts.helper import BUNDLE, main
@@ -22,6 +24,8 @@ def test_exactly_five_consistent_plugin_skills_and_resolvable_resources():
         assert f"name: {name}\n" in text
         assert "disable-model-invocation: true" in text
         for link in _links(text):
+            if link.startswith("https://"):
+                continue
             assert (path.parent / link).resolve().is_relative_to(BUNDLE)
             assert (path.parent / link).exists()
     project = tomllib.loads((BUNDLE / "pyproject.toml").read_text())
@@ -69,6 +73,10 @@ def test_installed_bundle_uses_own_environment_and_assets(tmp_path, repo_factory
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert (target / "AGENTS.md").exists()
+    assert (target / ".github/dependabot.yml").is_file()
+    assert yaml.safe_load((target / ".github/zizmor.yml").read_text()) == {"rules": {}}
+    hooks = yaml.safe_load((target / ".pre-commit-config.yaml").read_text())["repos"]
+    assert any(hook["id"] == "zizmor" for repo in hooks for hook in repo["hooks"])
     assert (target / "pyproject.toml").read_bytes() == manifest
     assert (target / "uv.lock").read_bytes() == b"user lock"
     assert not (target / ".venv").exists()

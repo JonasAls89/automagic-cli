@@ -78,8 +78,8 @@ def test_every_reviewed_input_invalidates_approval(repo_factory, commit, name):
         ('sources = ["INTENT.md", "README.md"]', 'sources = ["missing.md"]', "Missing execution"),
         (
             'sources = ["INTENT.md", "README.md"]',
-            'sources = [".automagic/plan/graph.json"]',
-            "Legacy/runtime",
+            'sources = [".automagic/execution/approval.json"]',
+            "Runtime state",
         ),
         ('items = ["docs/work/wi-01.md"]', 'items = ["README.md"]', "directly in docs/work"),
         ('goal = "Demo"', 'goal = ""', "goal"),
@@ -189,13 +189,36 @@ def test_symlink_escape_state_lock_and_atomic_cleanup(tmp_path):
         state_path(root, "link/file")
 
 
-def test_legacy_graph_and_corrupt_approval_are_explicit(tmp_path, repo_factory, capsys):
-    old = tmp_path / ".automagic/plan/graph.json"
-    old.parent.mkdir(parents=True)
-    old.write_text("legacy")
-    with pytest.raises(ValueError, match="Legacy graphs"):
+def test_missing_handoff_index_requires_external_planning(tmp_path):
+    with pytest.raises(
+        ValueError,
+        match=r"^Missing docs/work/_index\.md; finish external planning, then use worktrees\.$",
+    ):
         load_plan(tmp_path)
-    assert old.read_text() == "legacy"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_graph_named_design_source_is_an_ordinary_input(repo_factory, commit):
+    root = repo_factory()
+    relative = "docs/design/graph.json"
+    path = root / relative
+    path.parent.mkdir()
+    content = '{"design": "approved"}\n'
+    path.write_text(content)
+    replace(
+        root,
+        INDEX,
+        'sources = ["INTENT.md", "README.md"]',
+        f'sources = ["INTENT.md", "README.md", "{relative}"]',
+    )
+    commit(root, INDEX, relative)
+    plan = load_plan(root)
+    approve(root, plan)
+    require_approval(root, plan)
+    assert plan.inputs[relative] == content.encode()
+
+
+def test_corrupt_approval_is_reported_explicitly(repo_factory, capsys):
     root = repo_factory()
     plan = load_plan(root)
     approve(root, plan)

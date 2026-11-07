@@ -22,11 +22,12 @@ human actions remain visible. Developers control commit grouping and merging.
 
 Provide five workflows: init, context, intent, worktrees and run.
 Preserve Markdown/agent setup, grounding, small-context guardrails and
-dependency-aware execution.
+dependency-aware execution. Include GitHub security configuration and assisted
+language/framework-specific pre-commit setup, not application scaffolding.
 
 Do not provide an application generator, a planning interview engine, an
 assumption graph, a separate review product, automatic commits or pushes,
-or automatic conversion of old plans. Cookiecutter is not the distribution
+or a migration/compatibility layer. Cookiecutter is not the distribution
 mechanism for this scope.
 
 ## Constraints and principles
@@ -40,4 +41,5 @@ inputs change. Require documented verification; unverified work is not complete.
 
 Users supply Copilot CLI, uv and the external planning plugin.
 Future distribution or execution engines require a separate scope decision.
-See the [operating contract](docs/adr/0017-skills-first-intent-workflow.md).
+See the [current operating contract](docs/adr/0018-current-workflow-only.md) and
+[repository setup scope](docs/adr/0019-repository-security-setup.md).

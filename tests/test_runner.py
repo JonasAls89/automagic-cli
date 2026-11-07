@@ -84,23 +84,6 @@ def test_binary_changes_fail_explicitly(repo_factory, command):
     assert "binary changes" in saved(root).items["wi-01"].detail
 
 
-def test_execution_never_imports_or_rewrites_legacy_files(repo_factory, worker):
-    root = repo_factory()
-    legacy = {
-        ".automagic/config.toml": b"invalid legacy configuration",
-        ".automagic/plan/graph.json": b"invalid legacy graph",
-        ".automagic/plan/run.json": b"invalid legacy run state",
-        "docs/plan/old.md": b"[historical](missing-source.md)",
-    }
-    for relative, content in legacy.items():
-        path = root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
-    ready(root)
-    assert launch(root, worker) == 0
-    assert all((root / relative).read_bytes() == content for relative, content in legacy.items())
-
-
 def test_changed_worktree_inputs_block_the_worker_before_launch(repo_factory, worker):
     root = repo_factory()
     plan = ready(root)

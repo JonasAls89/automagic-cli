@@ -10,6 +10,12 @@ from jinja2 import Environment, StrictUndefined
 
 from automagic.config import Config
 
+SETUP_CONFIGS = {
+    ".github/dependabot.yml",
+    ".github/zizmor.yml",
+    ".pre-commit-config.yaml",
+}
+
 # Jinja is used for text templates, never HTML.
 _env = Environment(undefined=StrictUndefined, keep_trailing_newline=True, autoescape=False)  # noqa: S701  # nosec B701
 
@@ -27,8 +33,8 @@ def _template_files(assets: Path) -> dict[str, str]:
     for src in sorted(assets.rglob("*")):
         if src.is_file() and src.name != ".DS_Store":
             rel = src.relative_to(assets).as_posix()
-            if not rel.endswith((".md", ".md.j2")):
-                raise ValueError(f"Baseline assets must be Markdown: {rel}")
+            if not rel.endswith((".md", ".md.j2")) and rel not in SETUP_CONFIGS:
+                raise ValueError(f"Baseline assets must be Markdown or approved setup YAML: {rel}")
             files[rel] = src.read_text()
     return files
 

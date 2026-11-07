@@ -1,8 +1,7 @@
 # automagic
 
-A five-skill Copilot plugin connecting project intent and external planning to
-reviewed, verified worktree execution. It also supplies a Markdown-only
-repository baseline. There is no public `automagic` CLI.
+Five Copilot skills connecting intent, external planning and verified worktree
+execution, plus docs/security setup. No public `automagic` CLI.
 
 ## Install
 
@@ -25,7 +24,7 @@ Automagic does not install or vendor it.
 
 | Skill | What it does |
 |---|---|
-| [/automagic:init](skills/init/SKILL.md) | Previews/applies Markdown and agent files, preserving existing content. |
+| [/automagic:init](skills/init/SKILL.md) | Docs, GitHub configs and guided pre-commit setup. |
 | [/automagic:context](skills/context/SKILL.md) | Refreshes the managed context index and validates active document size and relative links. |
 | [/automagic:intent](skills/intent/SKILL.md) | Captures high-level project purpose, users, outcomes, scope and constraints in root `INTENT.md`. |
 | [/automagic:worktrees](skills/worktrees/SKILL.md) | Proposes bounded work from approved design, then offers approval and creation separately. |
@@ -36,10 +35,12 @@ not start planning, create branches or launch agents.
 
 ### Intent to execution
 
-1. Initialize the Markdown baseline. It includes `AGENTS.md`, Copilot/docs
-   instructions, glossary, context index, guardrails and ADR setup
-   ([assets](skills/init/assets/)). No manifests, language tooling, CI, hooks,
-   dependencies or unfinished intent file are generated.
+1. Apply the [documentation/setup assets](skills/init/assets/), including
+   `.github/dependabot.yml`, `.github/zizmor.yml` and `.pre-commit-config.yaml`.
+   Pinned zizmor checks and weekly Actions updates with a 7-day cooldown are included.
+   Init proposes stack-specific hooks and package updates from actual manifests.
+   No application/CI/dependency scaffolding; Git-hook installation and execution
+   require confirmation.
 2. Capture intent with `/automagic:intent`. Confirm its proposed edits;
    intent approval is not design approval.
 3. Invoke `/mattpocock-skills:grill-with-docs` yourself, supplying intent and
@@ -105,16 +106,16 @@ Concurrent mutations are locked; check for active helpers/workers before
 explicitly removing an abandoned lock. A failed or interrupted worker is retried
 only after another confirmed run; logs and existing changes remain available.
 
-### Existing repositories and legacy plans
+### Existing repositories
 
 Init skips existing files; a skip is not an upgrade. The skill proposes confirmed
 edits for outdated sections, including adding managed context markers when absent.
-Legacy workspace skills, configurations, `docs/plan/` and `.automagic/plan/` remain
-untouched. They are not imported as execution state. There is no graph migration,
-planning resume/amend, HTML/show surface or separate review command.
+Execution requires the current reviewed handoff under `docs/work/` and uses local
+state under `.automagic/execution/`.
 
-The current contract and immutable historical ADR references are in
-[ADR 0017](docs/adr/0017-skills-first-intent-workflow.md).
+The current-only support policy is in
+[ADR 0018](docs/adr/0018-current-workflow-only.md); the setup scope is in
+[ADR 0019](docs/adr/0019-repository-security-setup.md).
 
 ### Why not Cookiecutter?
 
@@ -146,5 +147,5 @@ uv run prek run --all-files
 
 Tests include disposable Git repositories and fake workers; they do not launch
 real unattended agents. Coverage of helpers and the private launcher must remain
-at least 90%. The repository's own Python tooling/CI is retained; it is not part
-of the generated target baseline.
+at least 90%. Repository-specific Python tooling/CI stays here; target hooks are
+adapted to the project's stack.

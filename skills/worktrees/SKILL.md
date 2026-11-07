@@ -19,7 +19,6 @@ disable-model-invocation: true
    [work-item](assets/work-item.md) templates. Fill all placeholders. Use literal
    repository-relative file paths, not globs or directories. Keep each document
    below 8,000 bytes. Clear `blockers` only after design gaps are settled.
-   Leave legacy `docs/plan/` and `.automagic/plan/` files untouched.
    Handoff inputs must be regular tracked files. For symlinked inputs, propose
    confirmed regular-document snapshots; never replace user-owned links silently.
 4. Use the [helper](../../scripts/helper.py) to refresh context, then preview
@@ -45,5 +44,4 @@ disable-model-invocation: true
    `--create --yes`. Creation does not launch agents. Existing owned worktrees
    are reused; collisions require explicit resolution, never reset or deletion.
 7. Show `/automagic:run`. Changed inputs/base commits require a new reviewed
-   snapshot; old worktrees and runtime state are preserved. Do not import legacy
-   graphs, silently replan, start agents, commit or push.
+   snapshot. Do not silently replan, start agents, commit or push.

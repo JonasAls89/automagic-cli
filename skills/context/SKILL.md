@@ -19,4 +19,4 @@ Read each reported problem and propose fixes grounded in the relevant files.
 An absent, duplicate or misordered marker pair needs a confirmed surgical edit;
 do not replace the user's context document. Refresh again after approved edits.
 Completion means the index is current and validation passes, not that planning
-or execution is approved. Legacy plan graphs are not consulted or modified.
+or execution is approved.
