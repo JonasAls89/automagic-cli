@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-STATE_DIR = ".automagic"
-
 # {prompt} is replaced by the agent prompt. Agents may edit files and run shell commands in
 # their own worktree; committing, pushing and merging are denied.
 DEFAULT_RUNNER = (

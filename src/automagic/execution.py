@@ -214,20 +214,15 @@ def load_plan(root: Path, cfg: Config | None = None) -> Plan:
         return inputs[relative].decode("utf-8")
 
     if not (root / INDEX).is_file():
-        legacy = any(
-            (root / path).exists()
-            for path in (".automagic/plan/graph.json", "docs/plan/graph.json")
-        )
-        detail = " Legacy graphs are not imported or modified." if legacy else ""
-        raise ValueError(f"Missing {INDEX}; finish external planning, then use worktrees.{detail}")
+        raise ValueError(f"Missing {INDEX}; finish external planning, then use worktrees.")
     metadata, _ = _document(read(INDEX), INDEX)
     index = Index.model_validate(metadata)
     if index.blockers:
         raise ValueError(f"Resolve design blockers with external grilling: {index.blockers}")
     read("INTENT.md")
     for relative in index.sources:
-        if relative.endswith("graph.json") or relative.startswith(".automagic/"):
-            raise ValueError(f"Legacy/runtime state is not a design input: {relative}")
+        if relative.startswith(".automagic/"):
+            raise ValueError(f"Runtime state is not a design input: {relative}")
         read(relative)
     for relative in GUIDANCE:
         if (root / relative).is_file():

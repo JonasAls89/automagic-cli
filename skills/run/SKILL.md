@@ -30,6 +30,6 @@ disable-model-invocation: true
    orchestrator, never by implementation agents.
 6. Never stage, commit, push, merge or reset on the user's behalf. A changed
    execution snapshot requires `/automagic:worktrees` review/reapproval; do not
-   silently reuse approval, import old graphs or overwrite old worktrees.
+   silently reuse approval or overwrite existing worktrees.
    If a helper lock was abandoned, verify no helper/workers are active before
    asking for explicit removal of that specific lock; never remove a live lock.
