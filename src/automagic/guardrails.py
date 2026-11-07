@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from automagic import plandocs
 from automagic.config import Config
 
 _FENCE = re.compile(r"```.*?```", re.DOTALL)
@@ -18,11 +17,15 @@ def context_files(root: Path) -> list[Path]:
     found: set[Path] = set()
     for pattern in (
         "AGENTS.md",
+        "INTENT.md",
+        "GLOSSARY.md",
         ".github/copilot-instructions.md",
         ".github/instructions/*.md",
         ".github/skills/*/SKILL.md",
+        "skills/*/SKILL.md",
         "docs/*.md",
-        "docs/plan/*.md",
+        "docs/adr/*.md",
+        "docs/work/*.md",
     ):
         found.update(p for p in root.glob(pattern) if p.is_file())
     return sorted(found)
@@ -54,10 +57,22 @@ def check(root: Path, cfg: Config) -> list[str]:
         indexed = {
             (index.parent / link.split("#", 1)[0]).resolve() for link in _links(index.read_text())
         }
-        for doc in sorted((root / "docs").glob("*.md")):
+        expected = set((root / "docs").glob("*.md"))
+        expected.update(
+            root / relative
+            for relative in (
+                "AGENTS.md",
+                "INTENT.md",
+                "GLOSSARY.md",
+                ".github/copilot-instructions.md",
+                "docs/work/_index.md",
+            )
+            if (root / relative).is_file()
+        )
+        for doc in sorted(expected):
             if doc.name != "CONTEXT.md" and doc.resolve() not in indexed:
-                problems.append(f"docs/{doc.name}: not listed in docs/CONTEXT.md")
-    return problems + plandocs.stale(root)
+                problems.append(f"{doc.relative_to(root)}: not listed in docs/CONTEXT.md")
+    return problems
 
 
 def _title(path: Path) -> str:
@@ -75,24 +90,34 @@ def build_index(root: Path) -> str:
             entries.append(f"- [{_title(doc)}]({doc.name})")
     if (docs / "adr").is_dir():
         entries.append("- [Architecture decision records](adr/0000-template.md)")
-    if (docs / "plan" / "_index.md").exists():
-        entries.append("- [Plan documents](plan/_index.md)")
-    for rel in ("AGENTS.md", ".github/copilot-instructions.md"):
+    if (docs / "work" / "_index.md").exists():
+        entries.append("- [Execution work items](work/_index.md)")
+    for rel in ("AGENTS.md", "INTENT.md", "GLOSSARY.md", ".github/copilot-instructions.md"):
         if (root / rel).exists():
             entries.append(f"- [{rel}](../{rel})")
     return "\n".join(entries)
 
 
-def update_index(root: Path) -> bool:
+def index_parts(root: Path) -> tuple[str, str, str]:
     path = root / "docs" / "CONTEXT.md"
-    text = path.read_text() if path.exists() else f"# Repository context\n\n{START}\n{END}\n"
-    if START not in text or END not in text:
-        raise ValueError("docs/CONTEXT.md is missing the automagic:context markers")
+    text = (
+        path.read_bytes().decode("utf-8")
+        if path.exists()
+        else f"# Repository context\n\n{START}\n{END}\n"
+    )
+    if text.count(START) != 1 or text.count(END) != 1 or text.index(START) > text.index(END):
+        raise ValueError("docs/CONTEXT.md requires one ordered pair of automagic:context markers")
     head, rest = text.split(START, 1)
     tail = rest.split(END, 1)[1]
+    return text, head, tail
+
+
+def update_index(root: Path) -> bool:
+    path = root / "docs" / "CONTEXT.md"
+    text, head, tail = index_parts(root)
     new = f"{head}{START}\n{build_index(root)}\n{END}{tail}"
     path.parent.mkdir(parents=True, exist_ok=True)
     changed = new != text
     if changed:
-        path.write_text(new)
+        path.write_bytes(new.encode("utf-8"))
     return changed

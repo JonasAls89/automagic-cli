@@ -1,0 +1,18 @@
+# Guardrails
+
+## Context size
+
+- Instruction and context files (`AGENTS.md`, `.github/copilot-instructions.md`, `.github/instructions/*`, `docs/*.md`) stay under {{ max_instruction_bytes }} bytes each.
+- Work items fit one agent context window (about {{ max_context_tokens }} tokens) and one human review (about {{ max_changed_lines }} changed lines).
+- `/automagic:context` validates context size and links. Execution also checks changed-line limits and approved file scope.
+
+## Grounding
+
+- Statements about the codebase must be traceable to a file. Relative Markdown links must resolve.
+- When information is missing, ask or record an open question; do not invent.
+- Decisions are recorded as ADRs in `docs/adr/`.
+
+## Review
+
+- One work item per branch or worktree, reviewed by a human before merge.
+- Run only committed, approved execution inputs with a documented verification command. Changed inputs require renewed approval.

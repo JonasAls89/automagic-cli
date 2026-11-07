@@ -1,39 +1,30 @@
 # Automagic
 
-Automagic settles planning topics through an interview and groups them into
-reviewable work items. See [planning terminology](README.md#how-planning-works).
+Automagic connects grounded project intent and reviewed design to bounded,
+verified implementation work.
 
 ## Language
 
-**Planning interview**:
-A guided clarification of a goal, its assumptions, and the decisions needed
-to define the intended work.
-See [planning questions](src/automagic/interview.py).
+**Intent**:
+The project's high-level purpose, intended users, desired outcomes, scope and
+constraints; not an implementation design.
 
-**Interview pause**:
-A stop before planning is settled, with unresolved decisions retained for
-deliberate continuation.
-See [pause and continuation](src/automagic/cli.py).
+**Approved design**:
+Design decisions the user has explicitly settled through external planning.
 
-**Interview durability**:
-Preservation of agreed decisions, interview position, pending input, and
-interview history across an interruption.
-See [interview durability](src/automagic/durability.py) and
-[recovery guarantees](docs/adr/0005-atomic-interview-checkpoints.md).
+**Execution handoff**:
+A reviewed breakdown of approved design into bounded work items, their
+prerequisites, acceptance criteria and verification obligations.
 
-**Plan publication**:
-The derived representation of agreed planning topics and their work-item
-breakdown for readers.
-See [plan publication](src/automagic/publication.py) and
-[plan presentation](src/automagic/cli.py).
+**Execution snapshot**:
+One exact reviewed version of the handoff and the project inputs it relies on.
 
-**Work-item run preparation**:
-The determination of a run's work-item scope and prerequisite ordering.
-See [work-item selection](src/automagic/runner.py) and
-[run preparation](src/automagic/cli.py).
+**Work item**:
+A bounded deliverable that one agent can implement and a human can review.
 
-**Run preview**:
-A presentation of a run's work-item scope and prerequisite ordering, not a
-guaranteed execution schedule.
-See [run presentation](src/automagic/cli.py) and
-[work-item execution](src/automagic/runner.py).
+**Verified completion**:
+Implementation work that passes its documented checks and scope guardrails,
+not necessarily work that has been committed or merged.
+
+**Manual-commit pause**:
+Dependent work waiting for the user to review and commit prerequisite changes.
