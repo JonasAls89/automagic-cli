@@ -1,10 +1,6 @@
-"""Project configuration stored in ``.automagic/config.toml``."""
+"""Private execution defaults; target repositories do not need a config file."""
 
 from __future__ import annotations
-
-import json
-import tomllib
-from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -19,31 +15,9 @@ DEFAULT_RUNNER = (
 
 
 class Config(BaseModel):
-    provider: str = "copilot"
-    provider_command: str = "copilot"
     max_context_tokens: int = Field(default=40_000, gt=0)
     max_changed_lines: int = Field(default=400, gt=0)
-    max_rounds: int = Field(default=8, gt=0)
-    max_questions: int = Field(default=12, ge=0)
     max_instruction_bytes: int = Field(default=8_000, gt=0)
     runner_command: str = DEFAULT_RUNNER
-    verify_command: str = "prek run --all-files"
     max_concurrency: int = Field(default=3, gt=0)
     agent_timeout: int = Field(default=3_600, gt=0)
-
-    def to_toml(self) -> str:
-        lines = []
-        for key, value in self.model_dump().items():
-            lines.append(f"{key} = {json.dumps(value)}")
-        return "\n".join(lines) + "\n"
-
-
-def state_dir(root: Path) -> Path:
-    return root / STATE_DIR
-
-
-def load_config(root: Path) -> Config:
-    path = state_dir(root) / "config.toml"
-    if not path.exists():
-        return Config()
-    return Config(**tomllib.loads(path.read_text()))

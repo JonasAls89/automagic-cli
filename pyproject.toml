@@ -1,13 +1,10 @@
 [project]
 name = "automagic"
 version = "0.1.0"
-description = "Scaffold repo baselines and plan work with a Merkle assumption graph"
+description = "Copilot skills for Markdown baselines, project intent and reviewed worktree execution"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["typer", "jinja2", "pydantic", "rich"]
-
-[project.scripts]
-automagic = "automagic:main"
+dependencies = ["jinja2", "pydantic"]
 
 [build-system]
 requires = ["uv_build>=0.8,<0.12"]
@@ -17,8 +14,8 @@ build-backend = "uv_build"
 dev = ["pytest", "pytest-cov", "ruff", "bandit[toml]", "prek"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
-addopts = ["--cov=automagic", "--cov-report=term-missing"]
+pythonpath = ["src", "."]
+addopts = ["--cov=automagic", "--cov=scripts", "--cov-report=term-missing"]
 
 [tool.coverage.report]
 fail_under = 90

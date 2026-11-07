@@ -1,0 +1,23 @@
+# Copilot instructions for {{ project_name }}
+
+Keep this file short. Detailed context lives in `docs/` and is indexed in [docs/CONTEXT.md](../docs/CONTEXT.md).
+
+## Grounding
+
+- Base every claim and change on files you have read in this repository. Cite paths.
+- If a fact is not in the repo or the task, say so and ask; do not guess APIs, flags or file names.
+- Read `docs/CONTEXT.md` first, then only the documents relevant to the task.
+- Read root `INTENT.md` when present. Capture missing high-level intent with `/automagic:intent`; thorough planning belongs to `/mattpocock-skills:grill-with-docs`.
+- Record significant decisions as an ADR in `docs/adr/`.
+
+## Scope and context size
+
+- Make small, reviewable changes: about {{ max_changed_lines }} changed lines per pull request.
+- Do not load or paste large files wholesale; read ranges.
+- Do not expand scope beyond the work item you were given.
+
+## Quality gates
+
+- Identify verification commands from existing project manifests, CI and developer documentation.
+- Ask if no verification command is documented; record an agreed command before running work items.
+- Run the documented checks and leave implementation changes uncommitted for human review.

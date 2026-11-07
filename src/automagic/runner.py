@@ -2,24 +2,35 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import shlex
 import subprocess  # nosec B404
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Final, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from automagic.config import Config
-from automagic.merkle import Graph
-from automagic.sizing import WorkItem
-from automagic.worktrees import Proposal, brief
+from automagic.execution import (
+    Plan,
+    WorkItem,
+    atomic_write,
+    git,
+    require_approval,
+    require_input_contents,
+)
+from automagic.guardrails import check
+from automagic.worktrees import Proposal, brief, create
 
-PENDING, RUNNING, DONE, FAILED, BLOCKED = "pending", "running", "done", "failed", "blocked"
+PENDING: Final = "pending"
+RUNNING: Final = "running"
+DONE: Final = "done"
+FAILED: Final = "failed"
+BLOCKED: Final = "blocked"
+RunStatus = Literal["pending", "running", "done", "failed", "blocked"]
 BRIEF_PATH = ".automagic/BRIEF.md"
 
 PROMPT = (
@@ -31,23 +42,22 @@ PROMPT = (
 
 
 class ItemRun(BaseModel):
-    status: str = PENDING
+    model_config = ConfigDict(extra="forbid")
+    status: RunStatus = "pending"
     branch: str = ""
     path: str = ""
     log: str = ""
     detail: str = ""
-    base: str = ""
-    review: str = ""
-    hash: str = ""
+    base: str = Field(default="", pattern=r"^(?:[a-f0-9]{40,64})?$")
 
 
 class RunState(BaseModel):
-    root_hash: str
+    model_config = ConfigDict(extra="forbid")
+    snapshot: str = Field(pattern=r"^[a-f0-9]{64}$")
     items: dict[str, ItemRun] = Field(default_factory=dict)
 
     def save(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.model_dump_json(indent=2) + "\n")
+        atomic_write(path, self.model_dump_json(indent=2) + "\n")
 
     @classmethod
     def load(cls, path: Path) -> RunState:
@@ -58,63 +68,11 @@ class RunError(RuntimeError):
     pass
 
 
-def item_hash(graph: Graph, item: WorkItem) -> str:
-    """Scope of a work item: its nodes and their Merkle hashes, which cover prerequisites."""
-    payload = json.dumps([[nid, graph.node_hash(nid)] for nid in item.node_ids])
-    return hashlib.sha256(payload.encode()).hexdigest()
-
-
-def stale_items(graph: Graph, items: list[WorkItem], state: RunState) -> list[str]:
-    """Items already run whose nodes changed since, so their saved work no longer matches."""
-    if state.root_hash == graph.root_hash():
-        return []
-    return [
-        i.id
-        for i in items
-        if (run := state.items.get(i.id))
-        and run.status != PENDING
-        and run.hash != item_hash(graph, i)
-    ]
-
-
-def finished(graph: Graph, items: list[WorkItem], state: RunState) -> set[str]:
-    stale = set(stale_items(graph, items, state))
-    return {k for k, r in state.items.items() if r.status == DONE and k not in stale}
-
-
-def adopt_plan(graph: Graph, items: list[WorkItem], state: RunState) -> list[str]:
-    """Reset stale items to pending and move the state to the current plan.
-
-    The branch, worktree and base of a reset item are kept, so its agent continues on the
-    existing work and a review still sees everything the item changed. Returns the reset ids.
-    """
-    stale = stale_items(graph, items, state)
-    for item in items:
-        if run := state.items.get(item.id):
-            if item.id in stale:
-                run.status, run.detail, run.log, run.review = PENDING, "", "", ""
-            run.hash = item_hash(graph, item)
-    state.root_hash = graph.root_hash()
-    return stale
-
-
-def fresh_state(graph: Graph, old: RunState | None) -> RunState:
-    """Empty run state that keeps the base of branches whose worktree still exists."""
-    state = RunState(root_hash=graph.root_hash())
-    for key, run in (old.items if old else {}).items():
-        if run.base and run.path and Path(run.path).is_dir():
-            state.items[key] = ItemRun(base=run.base)
+def saved_state(plan: Plan, path: Path) -> RunState:
+    state = RunState.load(path) if path.exists() else RunState(snapshot=plan.digest)
+    if state.snapshot != plan.digest or set(state.items) - {item.id for item in plan.items}:
+        raise RunError("Run state does not match the approved snapshot")
     return state
-
-
-def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(  # noqa: S603  # nosec B603 B607
-        ["git", *args],  # noqa: S607
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
 
 
 def needs_manual_commit(path: Path, base: str) -> bool:
@@ -162,6 +120,26 @@ def worktree_diff(path: Path, base: str, *, numstat: bool = False) -> str:
     return "".join(chunks)
 
 
+def changed_lines(output: str) -> int:
+    fields = iter(output.split("\0"))
+    total = 0
+    for row in filter(None, fields):
+        columns = row.split("\t", 2)
+        if len(columns) != 3:
+            raise RunError("Invalid Git numstat output")
+        added, removed, name = columns
+        if not name:
+            try:
+                next(fields)
+                next(fields)
+            except StopIteration as exc:
+                raise RunError("Incomplete Git numstat path pair") from exc
+        if not added.isdigit() or not removed.isdigit():
+            raise RunError("binary changes require explicit human review")
+        total += int(added) + int(removed)
+    return total
+
+
 def waves(items: list[WorkItem]) -> list[list[str]]:
     """Dependency waves assuming every item succeeds."""
     done: set[str] = set()
@@ -178,20 +156,15 @@ def waves(items: list[WorkItem]) -> list[list[str]]:
     return out
 
 
-def select(items: list[WorkItem], only: list[str], done: set[str]) -> set[str]:
-    """Work item ids to run for the given work item or planning topic ids.
-
-    Unfinished prerequisites are pulled in transitively; items in `done` are left out.
-    """
+def select(items: tuple[WorkItem, ...], only: list[str], done: set[str]) -> set[str]:
+    """Select stable work-item IDs and unfinished prerequisites."""
     by_id = {i.id: i for i in items}
-    owner = {n: i.id for i in items for n in i.node_ids}
     chosen: set[str] = set()
     stack: list[str] = []
     for ident in only:
-        target = ident if ident in by_id else owner.get(ident)
-        if target is None:
-            raise RunError(f"unknown work item or planning topic {ident!r}")
-        stack.append(target)
+        if ident not in by_id:
+            raise RunError(f"unknown work item {ident!r}")
+        stack.append(ident)
     while stack:
         current = stack.pop()
         if current in chosen or current in done:
@@ -203,28 +176,24 @@ def select(items: list[WorkItem], only: list[str], done: set[str]) -> set[str]:
 
 @dataclass(frozen=True)
 class RunPreparation:
-    selected: set[str] | None
+    selected: set[str]
     waves: list[list[str]]
 
 
 def prepare_run(
-    graph: Graph,
-    items: list[WorkItem],
+    plan: Plan,
     state_path: Path,
     *,
     only: list[str] | None = None,
-    restart: bool = False,
 ) -> RunPreparation:
     """Prepare selection and preview waves without changing items or saved state."""
-    selected = None
-    if only is not None:
-        saved = RunState.load(state_path) if not restart and state_path.exists() else None
-        done = finished(graph, items, saved) if saved else set()
-        selected = select(items, only, done)
+    state = saved_state(plan, state_path)
+    done = {item_id for item_id, run in state.items.items() if run.status == DONE}
+    selected = select(plan.items, only if only is not None else [i.id for i in plan.items], done)
     scoped = [
-        replace(item, depends_on=[d for d in item.depends_on if selected is None or d in selected])
-        for item in items
-        if selected is None or item.id in selected
+        item.model_copy(update={"depends_on": [d for d in item.depends_on if d in selected]})
+        for item in plan.items
+        if item.id in selected
     ]
     return RunPreparation(selected, waves(scoped))
 
@@ -236,34 +205,31 @@ def agent_command(cfg: Config, prompt: str = PROMPT) -> list[str]:
     return [p.replace("{prompt}", prompt) for p in parts]
 
 
-def prepare_worktree(
-    graph: Graph, prop: Proposal, items: list[WorkItem], props: dict[str, Proposal], repo: Path
-) -> None:
+def prepare_worktree(plan: Plan, prop: Proposal, props: dict[str, Proposal], repo: Path) -> None:
     """Create the worktree off its first prerequisite branch and merge in every prerequisite.
 
-    Safe to repeat: the worktree may already exist (`automagic worktrees --create`, or a retry
-    after a failed merge), so each prerequisite not yet in its history is merged now.
+    Existing worktrees must have orchestrator-owned records. Merge only prerequisites
+    not already in history, including on retries.
     """
     bases = [props[d].branch for d in prop.item.depends_on]
-    if not prop.path.exists():
-        cmd = ["worktree", "add", "-b", prop.branch, str(prop.path), bases[0] if bases else "HEAD"]
-        if git(["rev-parse", "--verify", "-q", prop.branch], repo).returncode == 0:
-            cmd = ["worktree", "add", str(prop.path), prop.branch]
-        result = git(cmd, repo)
-        if result.returncode != 0:
-            raise RunError(f"git {' '.join(cmd)}: {result.stderr.strip()}")
+    create(plan, [prop], repo)
+    if git(["rev-parse", "--verify", "-q", "MERGE_HEAD"], prop.path).returncode == 0:
+        raise RunError(f"Finish the existing merge in {prop.path} before resuming")
     for other in bases:
         if git(["merge-base", "--is-ancestor", other, "HEAD"], prop.path).returncode == 0:
             continue
         merged = git(["merge", "--no-edit", other], prop.path)
         if merged.returncode != 0:
-            git(["merge", "--abort"], prop.path)
+            aborted = git(["merge", "--abort"], prop.path)
+            if aborted.returncode:
+                raise RunError(f"merge failed; abort failed: {aborted.stderr.strip()}")
             error = merged.stderr.strip().splitlines()
             reason = "conflicts" if "CONFLICT" in merged.stdout else (error or ["failed"])[0]
             raise RunError(f"merging {other} into {prop.branch}: {reason}")
+    require_input_contents(prop.path, plan)
     brief_file = prop.path / BRIEF_PATH
     brief_file.parent.mkdir(parents=True, exist_ok=True)
-    brief_file.write_text(brief(graph, prop, items))
+    brief_file.write_text(brief(plan, prop))
 
 
 def _run_logged(cmd: list[str], cwd: Path, log: Path, timeout: int) -> int:
@@ -282,10 +248,11 @@ def _run_logged(cmd: list[str], cwd: Path, log: Path, timeout: int) -> int:
             return 127
 
 
-def execute(prop: Proposal, cfg: Config, log: Path, base: str = "") -> tuple[str, str]:
+def execute(prop: Proposal, cfg: Config, log: Path, base: str = "") -> tuple[RunStatus, str]:
     """Run and verify the agent's work, leaving commits to the user."""
     log.parent.mkdir(parents=True, exist_ok=True)
-    log.write_text("")
+    with log.open("a") as stream:
+        stream.write("\n--- execution attempt ---\n")
     code = _run_logged(agent_command(cfg), prop.path, log, cfg.agent_timeout)
     if code != 0:
         return FAILED, f"agent exited with {code}"
@@ -293,43 +260,63 @@ def execute(prop: Proposal, cfg: Config, log: Path, base: str = "") -> tuple[str
         diff = worktree_diff(prop.path, base or "HEAD")
         if not diff:
             return FAILED, "agent made no changes"
-        if cfg.verify_command.strip():
-            verify = shlex.split(cfg.verify_command)
+        verify = shlex.split(prop.item.verify_command)
+        code = _run_logged(verify, prop.path, log, cfg.agent_timeout)
+        fixed = worktree_diff(prop.path, base or "HEAD")
+        if code != 0 and fixed != diff:
             code = _run_logged(verify, prop.path, log, cfg.agent_timeout)
             fixed = worktree_diff(prop.path, base or "HEAD")
-            if code != 0 and fixed != diff:
-                code = _run_logged(verify, prop.path, log, cfg.agent_timeout)
-                fixed = worktree_diff(prop.path, base or "HEAD")
-            if code != 0:
-                return FAILED, f"verification failed ({cfg.verify_command})"
-            if not fixed:
-                return FAILED, "agent made no changes"
+        if code != 0:
+            return FAILED, f"verification failed ({prop.item.verify_command})"
+        if not fixed:
+            return FAILED, "agent made no changes"
+        changed = git(["diff", "--name-only", "-z", base or "HEAD", "--"], prop.path)
+        if changed.returncode:
+            raise RunError(f"git diff failed: {changed.stderr.strip()}")
+        outside = set(filter(None, changed.stdout.split("\0"))) | set(untracked_files(prop.path))
+        outside -= set(prop.item.files)
+        if outside:
+            return FAILED, f"changes outside approved files: {', '.join(sorted(outside))}"
+        counts = worktree_diff(prop.path, base or "HEAD", numstat=True)
+        total = changed_lines(counts)
+        if total > cfg.max_changed_lines:
+            return FAILED, f"changes exceed {cfg.max_changed_lines} lines"
+        problems = check(prop.path, cfg)
+        if problems:
+            return FAILED, "; ".join(problems)
     except RunError as exc:
         return FAILED, str(exc)
     return DONE, ""
 
 
 def run_plan(
-    graph: Graph,
-    items: list[WorkItem],
+    plan: Plan,
     props: list[Proposal],
     repo: Path,
     cfg: Config,
     state: RunState,
     state_path: Path,
-    log_dir: Path,
     on_update: Callable[[str, ItemRun], None] | None = None,
     only: set[str] | None = None,
 ) -> RunState:
+    require_approval(repo, plan)
+    items = plan.items
     by_id = {p.item.id: p for p in props}
     for item in items:
         run = state.items.setdefault(item.id, ItemRun())
+        if (run.branch and run.branch != by_id[item.id].branch) or (
+            run.path and run.path != str(by_id[item.id].path)
+        ):
+            raise RunError(f"{item.id}: saved worktree identity changed")
         run.branch, run.path = by_id[item.id].branch, str(by_id[item.id].path)
-        run.hash = item_hash(graph, item)
         if run.status != DONE and (only is None or item.id in only):
             run.status, run.detail = PENDING, ""
 
-    def update(item_id: str, status: str, detail: str = "") -> None:
+    def update(
+        item_id: str,
+        status: RunStatus,
+        detail: str = "",
+    ) -> None:
         run = state.items[item_id]
         run.status, run.detail = status, detail
         state.save(state_path)
@@ -361,6 +348,8 @@ def run_plan(
             for item in ready:
                 prop = by_id[item.id]
                 try:
+                    for dependency in item.depends_on:
+                        require_input_contents(by_id[dependency].path, plan)
                     waiting = [
                         d
                         for d in item.depends_on
@@ -374,24 +363,28 @@ def run_plan(
                         )
                         continue
                     progressed = True
-                    prepare_worktree(graph, prop, items, by_id, repo)
-                except RunError as exc:
+                    prepare_worktree(plan, prop, by_id, repo)
+                except (RuntimeError, ValueError) as exc:
                     progressed = True
                     update(item.id, FAILED, str(exc))
                     continue
                 if not state.items[item.id].base:
                     # Fixed once, after prerequisite merges, so reviews diff only the agent's work.
                     head = git(["rev-parse", "HEAD"], prop.path)
+                    if head.returncode:
+                        update(item.id, FAILED, f"cannot record base: {head.stderr.strip()}")
+                        continue
                     state.items[item.id].base = head.stdout.strip()
-                log = log_dir / f"{item.id}.log"
+                log = plan.runtime_path(repo, f"logs/{item.id}.log")
                 state.items[item.id].log = str(log)
                 update(item.id, RUNNING)
                 futures[item.id] = pool.submit(execute, prop, cfg, log, state.items[item.id].base)
             for item_id, future in futures.items():
-                try:
+                error = future.exception()
+                if error is None:
                     status, detail = future.result()
-                except Exception as exc:  # agent failures must not stop other items
-                    status, detail = FAILED, f"unexpected error: {exc}"
+                else:
+                    status, detail = FAILED, f"unexpected execution error: {error}"
                 update(item_id, status, detail)
             if not progressed:
                 break

@@ -1,0 +1,13 @@
+{
+  "name": "automagic",
+  "version": "0.1.0",
+  "description": "Markdown repository baselines, project intent, and reviewed worktree execution.",
+  "repository": "https://github.com/JonasAls89/automagic-cli",
+  "skills": [
+    "./skills/init",
+    "./skills/context",
+    "./skills/intent",
+    "./skills/worktrees",
+    "./skills/run"
+  ]
+}

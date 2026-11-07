@@ -25,9 +25,9 @@ repos:
       - id: zizmor
   - repo: local
     hooks:
-      - id: automagic-check
+      - id: automagic-context
         name: automagic guardrails
-        entry: automagic check
+        entry: uv run python scripts/helper.py context --check
         language: system
         pass_filenames: false
         files: '\.md$'

@@ -1,6 +1,6 @@
 # Repository context
 
-Index of context documents. Regenerate with `automagic context`.
+Index of context documents. Refresh with `/automagic:context` or `uv run python scripts/helper.py context` in this checkout.
 
 Domain language: [Glossary](../GLOSSARY.md).
 
@@ -8,13 +8,9 @@ Domain language: [Glossary](../GLOSSARY.md).
 - [Guardrails](GUARDRAILS.md)
 - [Architecture decision records](adr/0000-template.md)
 - [AGENTS.md](../AGENTS.md)
+- [INTENT.md](../INTENT.md)
+- [GLOSSARY.md](../GLOSSARY.md)
 - [.github/copilot-instructions.md](../.github/copilot-instructions.md)
 <!-- automagic:context:end -->
 
-Planning contract: [Bounded planning interview](adr/0012-bounded-planning-interview.md).
-
-Planning presentation and recovery: [Explainable planning screens](adr/0014-explainable-planning-screens.md).
-
-Worktree branch naming: [Categorized intent-based branches](adr/0015-categorized-worktree-branches.md).
-
-Run completion and review: [Human-owned work-item commits](adr/0016-human-owned-work-item-commits.md).
+Operating contract and historical decisions: [Skills-first intent workflow](adr/0017-skills-first-intent-workflow.md).
